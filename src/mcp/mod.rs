@@ -51,6 +51,9 @@ pub struct Args {
     /// Only these environments (repeat or separate with commas); default: all of them
     #[arg(long = "env", value_delimiter = ',', value_name = "ENV")]
     envs: Vec<String>,
+    /// Also share the billing account's totals and the budgets that count other projects
+    #[arg(long)]
+    account_costs: bool,
 }
 
 pub fn serve(loaded: &Loaded, args: Args) -> Result<ExitCode> {
@@ -64,7 +67,8 @@ pub fn serve(loaded: &Loaded, args: Args) -> Result<ExitCode> {
             crate::util::program()
         );
     }
-    let server = Server::new(loaded.config.clone(), args.envs);
+    let mut server = Server::new(loaded.config.clone(), args.envs);
+    server.account_costs = args.account_costs;
     serve_io(&server, std::io::stdin().lock(), std::io::stdout());
     Ok(ExitCode::SUCCESS)
 }
@@ -77,6 +81,8 @@ pub struct Server {
     config: Config,
     /// The environments it may read (`--env`); empty: all.
     allowed: Vec<String>,
+    /// Whether cost answers may include the billing account beyond the environment's project.
+    account_costs: bool,
     /// One client per environment.
     clients: Mutex<HashMap<String, Arc<Gcp>>>,
     client_for: ClientFor,
@@ -87,6 +93,7 @@ impl Server {
         Server {
             config,
             allowed,
+            account_costs: false,
             clients: Mutex::new(HashMap::new()),
             client_for: Box::new(|env| Gcp::new(&env.project, &env.region)),
         }

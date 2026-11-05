@@ -297,7 +297,7 @@ fn app_detail(s: &Server, args: &Value) -> Result<String, String> {
 
 fn costs_summary(s: &Server, args: &Value) -> Result<String, String> {
     let (name, _) = s.env(args)?;
-    cloud_data(crate::costs::mcp::summary(name, &s.config.defaults.costs, crate::util::now_secs())?)
+    cloud_data(crate::costs::mcp::summary(name, &s.config.defaults.costs, crate::util::now_secs(), s.account_costs)?)
 }
 
 fn cost_spikes(s: &Server, args: &Value) -> Result<String, String> {

@@ -34,7 +34,11 @@ fn fresh(env: &str, now: f64) -> Result<Snapshot, String> {
 
 /// This month so far, against the same complete days of last month, the forecast, budgets,
 /// credits, services, apps and what they share, and the last complete day's spikes.
-pub fn summary(env: &str, costs: &CostDefaults, now: f64) -> Result<Value, String> {
+///
+/// Without `account`, it leaves out what covers more than the environment's project: the billing
+/// account's totals and budgets that also count other projects. An agent limited to one
+/// environment (`gcli mcp --env`) must not learn what the rest of the account spends.
+pub fn summary(env: &str, costs: &CostDefaults, now: f64, account: bool) -> Result<Value, String> {
     let s = fresh(env, now)?;
     let rule = Rule::of(costs);
     let month = Day::of(s.read_at).month_start();
@@ -61,7 +65,27 @@ pub fn summary(env: &str, costs: &CostDefaults, now: f64) -> Result<Value, Strin
     out["apps"] = json!({ "listed": apps.len(), "of": total_apps, "list": apps });
     out["shared"] = serde_json::to_value(shared).unwrap_or_default();
     out["readAgo"] = json!(fmt_ago(s.read_at));
+    if !account {
+        limit_to_project(&mut out);
+    }
     Ok(out)
+}
+
+fn limit_to_project(out: &mut Value) {
+    if let Some(month) = out.get_mut("month").and_then(Value::as_object_mut) {
+        month.remove("account");
+        month.remove("accountPrevious");
+    }
+    let mut left_out = 0;
+    if let Some(budgets) = out.get_mut("budgets").and_then(Value::as_array_mut) {
+        let before = budgets.len();
+        budgets.retain(|b| b["beyondProject"] == json!(false) && b["coversProject"] == json!(true));
+        left_out = before - budgets.len();
+    }
+    out["accountData"] = json!(format!(
+        "not shared: the billing account's totals and {left_out} budget(s) that count other projects are left out; \
+         the user can start the server with `gcli mcp --account-costs` to share them"
+    ));
 }
 
 /// The spikes on `date` (a complete UTC day; default the last one), with the numbers behind
@@ -118,17 +142,36 @@ mod tests {
         let costs = CostDefaults::default();
         let mut s = snapshot();
         s.env = "mcp-summary".into();
-        let e = summary("mcp-summary", &costs, NOW).unwrap_err();
+        let e = summary("mcp-summary", &costs, NOW, true).unwrap_err();
         assert!(e.contains("gcli costs mcp-summary --refresh"), "{e}");
         super::super::store(&s, &costs).unwrap();
-        let v = summary("mcp-summary", &costs, NOW + 3600.0).unwrap();
+        let v = summary("mcp-summary", &costs, NOW + 3600.0, true).unwrap();
         assert_eq!(v["lastCompleteDay"], "2026-11-04");
         assert_eq!(v["apps"]["list"][0]["app"], "orders");
         assert_eq!(v["spikes"]["found"][0]["name"], "orders");
         assert_eq!(v["month"]["complete"]["to"], "2026-11-04");
         assert!(v["budgets"].as_array().is_some_and(|b| !b.is_empty()));
-        let e = summary("mcp-summary", &costs, NOW + 2.0 * 86_400.0).unwrap_err();
+        let e = summary("mcp-summary", &costs, NOW + 2.0 * 86_400.0, true).unwrap_err();
         assert!(e.contains("was read") && e.contains("--refresh"), "{e}");
+    }
+
+    #[test]
+    fn account_data_stays_out_unless_shared() {
+        let mut v = json!({
+            "month": { "total": 1.0, "account": { "gross": 9.0 }, "accountPrevious": { "gross": 8.0 } },
+            "budgets": [
+                { "name": "this project", "coversProject": true, "beyondProject": false },
+                { "name": "whole account", "coversProject": true, "beyondProject": true },
+                { "name": "two projects", "coversProject": true, "beyondProject": true },
+                { "name": "another project", "coversProject": false, "beyondProject": true },
+            ],
+        });
+        limit_to_project(&mut v);
+        assert!(v["month"].get("account").is_none() && v["month"].get("accountPrevious").is_none());
+        assert_eq!(v["month"]["total"], 1.0);
+        let names: Vec<_> = v["budgets"].as_array().unwrap().iter().map(|b| b["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["this project"]);
+        assert!(v["accountData"].as_str().unwrap().contains("3 budget(s)"));
     }
 
     #[test]

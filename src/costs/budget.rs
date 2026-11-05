@@ -24,6 +24,9 @@ pub struct Spend {
     pub thresholds: Vec<Threshold>,
     /// Whether it covers the environment's project.
     pub covers_project: bool,
+    /// Whether its spend includes other projects (no project filter, or more than this one): the
+    /// MCP server shares those only when started with `--account-costs`.
+    pub beyond_project: bool,
     /// What the figure cannot account for (label filters, a period cut mid-month).
     pub notes: Vec<String>,
 }
@@ -159,6 +162,7 @@ pub fn spend(
         forecast,
         thresholds,
         covers_project: projects.is_empty() || projects.contains(&project_number),
+        beyond_project: projects.is_empty() || projects.iter().any(|p| *p != project_number),
         notes,
     }
 }
