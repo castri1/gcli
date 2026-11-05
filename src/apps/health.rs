@@ -20,11 +20,17 @@ const INSTANCES: &str = "run.googleapis.com/container/instance_count";
 
 pub const DAY: f64 = 86_400.0;
 
-/// An app holds requests when its p99 latency is at least this share of its timeout.
+/// A request is "near the timeout" when it ran at least this share of it.
 pub const HELD_SHARE: f64 = 0.9;
+/// A busy app's p99 hides its long requests (thousands of fast ones around a few dozen held for
+/// five minutes), so it also holds requests when those take at least this share of its billed
+/// instance time…
+pub const HELD_BILLED_SHARE: f64 = 0.2;
+/// …and there are at least this many of them (a couple of slow requests are not a pattern).
+pub const HELD_MIN_REQUESTS: f64 = 10.0;
 
 /// What `held` means, in one line, for the detail and the reports.
-pub const HELD_EXPLAINED: &str = "p99 latency is at the request timeout: requests are held open (SSE streams, long polls, slow crons) until Cloud Run cuts them, and each keeps an instance billed the whole time.";
+pub const HELD_EXPLAINED: &str = "requests run until the request timeout (p99 at the timeout, or such requests take a fifth or more of the billed time): SSE streams, long polls or slow crons held open until Cloud Run cuts them, each keeping an instance billed the whole time.";
 
 /// A stretch of an app's traffic, summed.
 #[derive(Debug, Clone, Default)]
@@ -53,7 +59,17 @@ impl Health {
     }
 
     pub fn held(&self, timeout_secs: f64) -> bool {
-        held(self.percentile(0.99), timeout_secs)
+        if held(self.percentile(0.99), timeout_secs) {
+            return true;
+        }
+        let near = self.near_timeout(timeout_secs);
+        near >= HELD_MIN_REQUESTS && self.near_timeout_share(timeout_secs).is_some_and(|s| s >= HELD_BILLED_SHARE)
+    }
+
+    /// About what share of the billed instance time went to requests near the timeout (each
+    /// counted as the whole timeout; concurrent ones share an instance, so it can overstate).
+    pub fn near_timeout_share(&self, timeout_secs: f64) -> Option<f64> {
+        (self.billed_secs > 0.0).then(|| self.near_timeout(timeout_secs) * timeout_secs / self.billed_secs)
     }
 
     /// About how many requests ran at least [`HELD_SHARE`] of the timeout.
@@ -412,6 +428,26 @@ pub(crate) mod tests {
         assert!(!stream.held(3600.0), "the same latency is fine with an hour's timeout");
         assert!((19.0..=20.0).contains(&stream.near_timeout(300.0)), "{}", stream.near_timeout(300.0));
         assert_eq!(Health::default().percent("5xx"), None);
+    }
+
+    #[test]
+    fn a_busy_app_holds_requests_when_they_take_its_billed_time() {
+        // Buckets in ms: <1 s, 1 s–270 s, 270–300 s (near a 300 s timeout), 300 s and over.
+        let app = |near: f64, billed_hours: f64| Health {
+            requests: 10_000.0 + near,
+            classes: BTreeMap::new(),
+            billed_secs: billed_hours * 3600.0,
+            latency: Some(Distribution {
+                buckets: crate::gcp::monitoring::Buckets::Explicit(vec![1000.0, 270_000.0, 300_000.0]),
+                counts: vec![10_000.0, 0.0, near, 0.0],
+            }),
+        };
+        let cron = app(27.0, 2.5);
+        assert!(cron.percentile(0.99).unwrap() < 1000.0, "the fast requests hide them from the p99");
+        assert!(cron.held(300.0), "27 requests of ~5 min are ~90% of 2.5 billed hours");
+        assert!(!app(4.0, 1.4).held(300.0), "a fifth of the billed time, but only 4 requests");
+        assert!(!app(27.0, 100.0).held(300.0), "27 of them in 100 billed hours are not the cost");
+        assert_eq!(app(27.0, 0.0).near_timeout_share(300.0), None);
     }
 
     #[test]

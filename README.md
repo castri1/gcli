@@ -61,7 +61,7 @@ gcli app APP [ENV] [--json | --report]   # one app: health, revisions, secrets (
 gcli apps restart APP [ENV] [--yes]      # new revision, same config: re-reads `latest` secrets
 gcli apps min APP N [ENV] [--yes]        # service-level min instances (no new revision)
 gcli costs [ENV] [--by service|app|sku] [--month YYYY-MM] [--days N] [--refresh] [--json]
-gcli costs [ENV] --check [--date YYYY-MM-DD]   # exit 1 when an app or shared service spiked
+gcli costs [ENV] --check [--date YYYY-MM-DD]   # exit 1: a spike; 2: could not read fresh costs
 gcli envs [--json]         # the environments, and which one is current
 gcli use [ENV]             # set the current environment
 gcli add [NAME] [--project ID] [--region R] [--production]   # add an environment to the config
@@ -85,9 +85,12 @@ requests, `always`: always on), and its last 24 h from Cloud Monitoring (one cal
 every app): requests, 4xx and 5xx shares, billed instance hours and p99 latency. When
 `gcli costs` has written `~/.gcli/costs/<env>/apps.json`, this month's and yesterday's cost too.
 
-**Held** marks an app whose p99 latency is at least 90% of its request timeout: requests held
-open (SSE streams, long polls, slow crons) until Cloud Run cuts them, each keeping an instance
-billed the whole time.
+**Held** marks an app whose requests run until the request timeout: SSE streams, long polls or
+slow crons that Cloud Run cuts at the timeout, each keeping an instance billed the whole time.
+Either its p99 latency is at least 90% of the timeout, or, in a busy app whose fast requests hide
+them from the p99, at least 10 requests ran that long and they take a fifth or more of its billed
+instance time. The NOTES column counts requests near the timeout even when they are not enough
+to call the app held.
 
 An app's **Secrets** tab lists its secrets with their versions (enabled, disabled, destroyed,
 with dates), which are bound to the service (variable ← version) and which are not, and flags a
