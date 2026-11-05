@@ -17,7 +17,9 @@ pub mod gcloud;
 pub mod http;
 #[cfg(test)]
 pub mod mock;
+pub mod monitoring;
 pub mod run;
+pub mod secrets;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -111,7 +113,6 @@ impl Gcp {
     }
 
     /// GET a resource or a page of a list.
-    #[allow(dead_code)] // single reads (an app's revisions, a build), from M2
     pub fn get<T: DeserializeOwned>(&self, url: &str, query: &[(&str, &str)]) -> Result<T> {
         self.get_with(url, query, Opts::default())
     }
@@ -121,6 +122,13 @@ impl Gcp {
         parse(&self.send("GET", url, query, None, opts)?)
     }
 
+    /// GET a resource exactly as Google sent it, strings uncleaned: for a change that sends
+    /// it back, where every field must stay as it is. Never shown.
+    pub fn get_exact(&self, url: &str) -> Result<Value> {
+        let bytes = self.send("GET", url, &[], None, Opts { idempotent: true, ..Opts::default() })?;
+        serde_json::from_slice(if bytes.is_empty() { b"{}" } else { &bytes }).map_err(unexpected)
+    }
+
     /// POST a JSON body (a query, an action such as `:run`).
     #[allow(dead_code)] // used by Costs (BigQuery jobs) and the Apps actions
     pub fn post<T: DeserializeOwned>(&self, url: &str, body: &Value, opts: Opts) -> Result<T> {
@@ -128,7 +136,6 @@ impl Gcp {
     }
 
     /// PATCH a resource; `query` usually names the fields changed (`updateMask`).
-    #[allow(dead_code)] // used by the Apps actions (min instances)
     pub fn patch<T: DeserializeOwned>(&self, url: &str, query: &[(&str, &str)], body: &Value, opts: Opts) -> Result<T> {
         parse(&self.send("PATCH", url, query, Some(body), opts)?)
     }
