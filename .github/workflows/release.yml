@@ -1,0 +1,130 @@
+# Push a tag like v0.1.0 to build every platform, attach the binaries to a GitHub release
+# and publish them to npm.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  # Creates the release once, so the builds only upload to it: several builds creating it
+  # at the same moment fail with "already_exists".
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 ||
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes ""
+
+  build:
+    name: ${{ matrix.target }}
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    env:
+      TAG: ${{ github.ref_name }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: contains(matrix.target, 'linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked --target "$TARGET"
+        shell: bash
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          name="gcli-$TAG-$TARGET"
+          mkdir "$name"
+          cp "target/$TARGET/release/gcli" README.md "$name"/
+          tar czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $name = "gcli-$env:TAG-$env:TARGET"
+          New-Item -ItemType Directory $name | Out-Null
+          Copy-Item "target/$env:TARGET/release/gcli.exe", README.md $name
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+          (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" | Out-File -Encoding ascii "$name.zip.sha256"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            gcli-*.tar.gz
+            gcli-*.zip
+            gcli-*.sha256
+
+  # Publishes @castri1/gcli and its per-platform packages, built from the archives above.
+  # Uses npm trusted publishing (OIDC): no token; each package trusts this workflow
+  # (npm trust github <package> --file release.yml --repo castri1/gcli --allow-publish).
+  npm:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@latest
+      - run: gh release download "$TAG" --dir archives --pattern 'gcli-*'
+      - run: node npm/build.mjs "$TAG" archives out
+      # A version already on npm is skipped, so the job can run again after a partial
+      # failure; signing the provenance sometimes fails once (a transparency log conflict).
+      - name: Publish (platform packages first, the launcher last)
+        run: |
+          published() { [ -n "$(npm view "$1@$2" version 2>/dev/null)" ]; }
+          # What `npm install` resolves against: the registry's install metadata, which can
+          # lag a publish by minutes.
+          served() {
+            curl -fsS -H 'Accept: application/vnd.npm.install-v1+json' "https://registry.npmjs.org/${1/\//%2f}" |
+              node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.exit(JSON.parse(s).versions['$2']?0:1))"
+          }
+          publish() {
+            name=$(node -p "require('./${1}package.json').name")
+            version=$(node -p "require('./${1}package.json').version")
+            if published "$name" "$version"; then
+              echo "$name@$version is already published"
+              return
+            fi
+            npm publish --access public "$1" || {
+              sleep 30
+              published "$name" "$version" || npm publish --access public "$1"
+            }
+          }
+          for dir in out/gcli-*/; do publish "$dir"; done
+          # The launcher installs these as optional dependencies: published before the registry
+          # serves them, npm would install it without a binary. Wait for every one.
+          for dir in out/gcli-*/; do
+            name=$(node -p "require('./${dir}package.json').name")
+            version=$(node -p "require('./${dir}package.json').version")
+            for _ in $(seq 1 60); do served "$name" "$version" && break; echo "waiting for the registry to serve $name@$version"; sleep 15; done
+            served "$name" "$version" || { echo "$name@$version is still not served"; exit 1; }
+          done
+          publish out/gcli/
