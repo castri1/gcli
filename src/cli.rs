@@ -11,10 +11,10 @@ use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 
 use crate::config::{self, Config, EnvChange, Environment, Loaded};
-use crate::gcp::{Gcp, gcloud, run};
+use crate::gcp::{Gcp, gcloud};
 use crate::tui::picker::{self, Item, Picker};
 use crate::tui::theme;
-use crate::util::{display_path, ellipsize, fmt_ago, program};
+use crate::util::{display_path, program};
 
 #[derive(Parser)]
 #[command(name = "gcli", version, about = "Explore and operate Google Cloud from your terminal")]
@@ -53,11 +53,29 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// List an environment's apps (Cloud Run services)
+    /// List an environment's apps with their last 24 h; restart one, or set its minimum instances
     Apps {
+        #[command(subcommand)]
+        action: Option<AppsAction>,
+        env: Option<String>,
+        /// Order of the list
+        #[arg(long, value_enum, default_value_t)]
+        sort: crate::apps::Sort,
+        /// Only the apps whose p99 latency sits at their timeout (exit 1 when there are any)
+        #[arg(long)]
+        held: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// One app: configuration, health, revisions and secrets (never their values)
+    App {
+        app: String,
         env: Option<String>,
         #[arg(long)]
         json: bool,
+        /// A Markdown report for an AI agent
+        #[arg(long, conflicts_with = "json")]
+        report: bool,
     },
     /// Sign in to Google Cloud (runs `gcloud auth login --update-adc`)
     Login { env: Option<String> },
@@ -76,6 +94,32 @@ pub enum Command {
     /// `<env>` alone opens the UI there
     #[command(external_subcommand)]
     Env(Vec<String>),
+}
+
+/// Changes to an app. Without `--yes` they ask first, in a terminal (production: type the name).
+#[derive(Subcommand)]
+pub enum AppsAction {
+    /// A new revision with the same configuration: instances start again and re-read `latest` secrets
+    Restart {
+        app: String,
+        env: Option<String>,
+        /// Do not ask
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Set the service-level minimum of instances (applies at once, no new revision)
+    Min {
+        app: String,
+        n: u32,
+        env: Option<String>,
+        /// Do not ask
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 // ---- output helpers ----------------------------------------------------------------
@@ -195,7 +239,18 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Use { env } => use_env(config, env),
         Command::Add { name, project, region, production } => add(&mut loaded, name, project, region, production),
         Command::Envs { json } => envs(&loaded, json),
-        Command::Apps { env, json } => apps(config, env, json),
+        Command::Apps { action: None, env, sort, held, json } => {
+            crate::apps::cmd::list(config, &env_or_current(config, env)?, sort, held, json)
+        }
+        Command::Apps { action: Some(AppsAction::Restart { app, env, yes, json }), .. } => {
+            crate::apps::cmd::restart(config, &env_or_current(config, env)?, &app, yes, json)
+        }
+        Command::Apps { action: Some(AppsAction::Min { app, n, env, yes, json }), .. } => {
+            crate::apps::cmd::min(config, &env_or_current(config, env)?, &app, n, yes, json)
+        }
+        Command::App { app, env, json, report } => {
+            crate::apps::cmd::detail(config, &env_or_current(config, env)?, &app, json, report)
+        }
         Command::Mcp(args) => crate::mcp::serve(&loaded, args),
     }
 }
@@ -315,56 +370,6 @@ fn envs(loaded: &Loaded, json: bool) -> Result<ExitCode> {
         }
         println!("  {}", paint(&details.join(" · "), "90"));
     }
-    Ok(ExitCode::SUCCESS)
-}
-
-/// An app as `--json` and the MCP server give it.
-pub(crate) fn service_json(s: &run::Service) -> Value {
-    json!({
-        "name": s.id(),
-        "region": s.region(),
-        "uri": s.uri,
-        "latestReadyRevision": s.revision(),
-        "updateTime": Some(&s.update_time).filter(|t| !t.is_empty()),
-        "lastModifier": s.last_modifier,
-        "minInstances": s.min_instances(),
-        "maxInstances": s.max_instances(),
-        "resource": s.name,
-    })
-}
-
-fn apps(config: &Config, env: Option<String>, json: bool) -> Result<ExitCode> {
-    let env_name = env_or_current(config, env)?;
-    let gcp = gcp_for(config, &env_name)?;
-    let services = run::all_services(&gcp)?;
-    if json {
-        print_json(&Value::Array(services.iter().map(service_json).collect()));
-        return Ok(ExitCode::SUCCESS);
-    }
-    let id_w = services.iter().map(|s| s.id().chars().count()).max().unwrap_or(0).clamp(7, 40);
-    let rev_w = services.iter().map(|s| s.revision().chars().count()).max().unwrap_or(0).clamp(8, 36);
-    println!(
-        "{}",
-        paint(&format!("{:<id_w$}  {:<rev_w$}  {:>7}  {:>9}  BY", "SERVICE", "REVISION", "MIN/MAX", "UPDATED"), "90;1")
-    );
-    for s in &services {
-        let scaling = format!("{}/{}", s.min_instances(), s.max_instances().map_or("-".into(), |m| m.to_string()));
-        let updated = s.updated().map(fmt_ago).unwrap_or_default();
-        println!(
-            "{:<id_w$}  {}  {:>7}  {}  {}",
-            ellipsize(s.id(), id_w),
-            paint(&format!("{:<rev_w$}", ellipsize(s.revision(), rev_w)), "90"),
-            scaling,
-            paint(&format!("{updated:>9}"), "90"),
-            paint(&s.last_modifier, "90")
-        );
-    }
-    let env = config.env(&env_name)?;
-    let count = services.len();
-    println!(
-        "\n{}",
-        paint(&format!("{count} service{} · {env_name} · {}", if count == 1 { "" } else { "s" }, env.summary()), "90")
-    );
     Ok(ExitCode::SUCCESS)
 }
 

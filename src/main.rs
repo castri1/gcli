@@ -1,3 +1,4 @@
+mod apps;
 mod cli;
 mod config;
 mod gcp;
