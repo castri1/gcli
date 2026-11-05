@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+mod costs;
 mod gcp;
 mod mcp;
 mod modules;

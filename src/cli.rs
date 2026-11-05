@@ -59,6 +59,8 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// What the environment's project costs, from the billing export (UTC days), and its spikes
+    Costs(crate::costs::command::Args),
     /// Sign in to Google Cloud (runs `gcloud auth login --update-adc`)
     Login { env: Option<String> },
     /// MCP server for Claude and other AI agents (stdio): reads Google Cloud, never changes it.
@@ -196,6 +198,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Add { name, project, region, production } => add(&mut loaded, name, project, region, production),
         Command::Envs { json } => envs(&loaded, json),
         Command::Apps { env, json } => apps(config, env, json),
+        Command::Costs(args) => crate::costs::command::run(config, args),
         Command::Mcp(args) => crate::mcp::serve(&loaded, args),
     }
 }

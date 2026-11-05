@@ -21,8 +21,11 @@ pub struct Output {
 }
 
 /// (name, title, reads Google Cloud, how to narrow a large answer)
-const TOOLS: &[(&str, &str, bool, &str)] =
-    &[("list_apps", "Apps of an environment", true, "pass `search` to list fewer apps")];
+const TOOLS: &[(&str, &str, bool, &str)] = &[
+    ("list_apps", "Apps of an environment", true, "pass `search` to list fewer apps"),
+    ("costs_summary", "Costs of an environment", false, "ask for `cost_spikes` instead"),
+    ("cost_spikes", "Cost spikes of an environment", false, ""),
+];
 
 pub fn exists(name: &str) -> bool {
     TOOLS.iter().any(|t| t.0 == name)
@@ -55,6 +58,8 @@ pub fn call(s: &Server, name: &str, args: &Value) -> Output {
     let narrow = TOOLS.iter().find(|t| t.0 == name).map_or("", |t| t.3);
     let result = check_args(&schema(s, name), args, "").and_then(|()| match name {
         "list_apps" => list_apps(s, args),
+        "costs_summary" => costs_summary(s, args),
+        "cost_spikes" => cost_spikes(s, args),
         _ => Err(format!("unknown tool: {name}")),
     });
     match result {
@@ -116,6 +121,14 @@ fn schema(s: &Server, name: &str) -> Value {
                 "search": { "type": "string", "description": "Only apps whose name, revision or last modifier contain every word of this (any case)" }
             }),
         ),
+        "costs_summary" => object(&["env"], json!({ "env": env_prop(s) })),
+        "cost_spikes" => object(
+            &["env"],
+            json!({
+                "env": env_prop(s),
+                "date": { "type": "string", "description": "A complete UTC day, YYYY-MM-DD (default: the last complete one)" }
+            }),
+        ),
         _ => json!({ "type": "object" }),
     }
 }
@@ -124,6 +137,12 @@ fn description(name: &str) -> &'static str {
     match name {
         "list_apps" => {
             "The environment's apps (Cloud Run services): latest ready revision, when it last changed and who changed it, min and max instances, and URL."
+        }
+        "costs_summary" => {
+            "What the environment's project costs, from the billing export as gcli last read it (never read by this tool): this month gross (credits left out) and net, against the same complete UTC days of last month, the forecast, budgets with their spend, credits, each service, each app (Cloud Run service) with its last complete day and 14-day median, what the apps share (shown whole, never spread), and the last complete day's spikes."
+        }
+        "cost_spikes" => {
+            "The apps and shared services whose cost spiked on a complete UTC day (default: the last one), with the numbers behind each: cost, the median of the 14 days before, the rule. From what gcli last read; never reads the billing export itself."
         }
         _ => "",
     }
@@ -227,6 +246,21 @@ fn list_apps(s: &Server, args: &Value) -> Result<String, String> {
         "of": total,
         "list": apps,
     }))
+}
+
+fn costs_summary(s: &Server, args: &Value) -> Result<String, String> {
+    let (name, _) = s.env(args)?;
+    cloud_data(crate::costs::mcp::summary(name, &s.config.defaults.costs, crate::util::now_secs())?)
+}
+
+fn cost_spikes(s: &Server, args: &Value) -> Result<String, String> {
+    let (name, _) = s.env(args)?;
+    cloud_data(crate::costs::mcp::spikes(
+        name,
+        arg_str(args, "date"),
+        &s.config.defaults.costs,
+        crate::util::now_secs(),
+    )?)
 }
 
 #[cfg(test)]
