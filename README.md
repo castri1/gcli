@@ -54,7 +54,11 @@ You also need the [gcloud CLI](https://cloud.google.com/sdk/docs/install), to si
 gcli login                 # gcloud auth login --update-adc (a browser opens)
 gcli                       # the UI, in the current environment
 gcli prod                  # the UI, in that environment
-gcli apps [ENV] [--json]   # the environment's Cloud Run services
+gcli apps [ENV] [--sort cost|requests|errors|name] [--json]   # apps and their last 24 h
+gcli apps [ENV] --held     # only apps holding requests at their timeout (exit 1 if any)
+gcli app APP [ENV] [--json | --report]   # one app: health, revisions, secrets (never values)
+gcli apps restart APP [ENV] [--yes]      # new revision, same config: re-reads `latest` secrets
+gcli apps min APP N [ENV] [--yes]        # service-level min instances (no new revision)
 gcli envs [--json]         # the environments, and which one is current
 gcli use [ENV]             # set the current environment
 gcli add [NAME] [--project ID] [--region R] [--production]   # add an environment to the config
@@ -65,7 +69,33 @@ gcli mcp [--env NAME]      # MCP server on stdio: claude mcp add gcli -- gcli mc
 | Where | Keys |
 |---|---|
 | Everywhere | `:` / `Ctrl+K` go to a module or an environment · `Tab` / `1`-`9` switch module · `e` environment · `L` sign in (suspends the UI and runs gcloud) · `?` help · `q` quit |
-| Apps | `↑↓` move · `/` search · `y` copy the URL · `o` open in the Cloud console · `r` reload |
+| Apps | `↑↓` move · `Enter` open · `/` search · `s` sort · `R` restart · `m` min instances · `y` copy the URL · `o` open in the Cloud console · `r` reload |
+| An app | `←→` Health / Revisions / Secrets · `w` 24 h / 6 h · `c` copy a report for an AI agent · `R` · `m` · `r` refresh · `Esc` back |
+
+### Apps
+
+An app is a Cloud Run service of the environment's region. With `apps: whiteghost` its secrets
+are also the `<slug>-prod-*` ones in Secret Manager. The list shows each app's latest ready
+revision and its age, traffic split, min/max instances, CPU allocation (`req`: only during
+requests, `always`: always on), and its last 24 h from Cloud Monitoring (one call per metric for
+every app): requests, 4xx and 5xx shares, billed instance hours and p99 latency. When
+`gcli costs` has written `~/.gcli/costs/<env>/apps.json`, this month's and yesterday's cost too.
+
+**Held** marks an app whose p99 latency is at least 90% of its request timeout: requests held
+open (SSE streams, long polls, slow crons) until Cloud Run cuts them, each keeping an instance
+billed the whole time.
+
+An app's **Secrets** tab lists its secrets with their versions (enabled, disabled, destroyed,
+with dates), which are bound to the service (variable ← version) and which are not, and flags a
+variable bound to `latest` whose newest version came after the running revision: Cloud Run
+reads it only when an instance starts, so it is *not loaded yet: restart to pick it up*. Values
+are never read.
+
+Changes are explicit and confirmed; in a production environment you type the app's name (the
+commands refuse without `--yes` outside a terminal). `R` / `gcli apps restart` sends the service
+back unchanged but for a `gcli-restart` template label, so Cloud Run makes a new revision with
+the same configuration; `m` / `gcli apps min` sets the service-level minimum, which applies at
+once without a revision (the revision's own minimum still applies when higher).
 
 ### Credentials
 
