@@ -266,3 +266,182 @@ impl Auth {
         }
     }
 }
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::gcp::mock::{MockServer, Reply};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// An `Auth` that always hands out `token`, for tests of the API calls.
+    pub(crate) fn fixed(token: &str) -> Arc<Auth> {
+        let token = token.to_string();
+        Arc::new(Auth::new(None, "http://127.0.0.1:9/token".into(), Box::new(move || Ok(token.clone()))))
+    }
+
+    fn adc_file(name: &str, content: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("gcli-adc-{name}-{}.json", std::process::id()));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    const USER_ADC: &str = r#"{"type":"authorized_user","client_id":"cid.apps.googleusercontent.com","client_secret":"shh","refresh_token":"1//refresh","quota_project_id":"q"}"#;
+
+    /// An `Auth` reading `adc` and talking to `server`, whose gcloud answers `gcloud` and
+    /// counts its runs.
+    fn auth(
+        adc: Option<PathBuf>,
+        server: &MockServer,
+        gcloud: std::result::Result<&str, &str>,
+    ) -> (Auth, Arc<AtomicUsize>) {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let counter = runs.clone();
+        let answer = gcloud.map(str::to_string).map_err(str::to_string);
+        let gcloud: GcloudToken = Box::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            answer.clone()
+        });
+        (Auth::new(adc, api_url(Some(&server.url()), TOKEN_URL), gcloud), runs)
+    }
+
+    #[test]
+    fn adc_refresh_token_is_exchanged_and_cached() {
+        let server = MockServer::start(vec![Reply::json(
+            200,
+            r#"{"access_token":"ya29.fresh","expires_in":3599,"token_type":"Bearer"}"#,
+        )]);
+        let path = adc_file("exchange", USER_ADC);
+        let (auth, gcloud_runs) = auth(Some(path.clone()), &server, Err("unused"));
+        assert_eq!(auth.token().unwrap(), "ya29.fresh");
+        assert_eq!(auth.token().unwrap(), "ya29.fresh", "the second call is served from the cache");
+        assert!(auth.describe().unwrap().starts_with("Application Default Credentials"));
+        assert_eq!(gcloud_runs.load(Ordering::SeqCst), 0);
+
+        let requests = server.requests();
+        assert_eq!(requests.len(), 1);
+        let r = &requests[0];
+        assert_eq!((r.method.as_str(), r.path.as_str()), ("POST", "/oauth2/token"));
+        assert!(r.header("content-type").unwrap().starts_with("application/x-www-form-urlencoded"));
+        for part in [
+            "grant_type=refresh_token",
+            "client_id=cid.apps.googleusercontent.com",
+            "client_secret=shh",
+            "refresh_token=1%2F%2Frefresh",
+        ] {
+            assert!(r.body.contains(part), "{part} in {}", r.body);
+        }
+        // Invalidated: exchanged again.
+        auth.invalidate();
+        server.push(Reply::json(200, r#"{"access_token":"ya29.second","expires_in":3599}"#));
+        assert_eq!(auth.token().unwrap(), "ya29.second");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn reauth_errors_fall_back_to_gcloud() {
+        let refusal = r#"{"error":"invalid_grant","error_description":"reauth related error (invalid_rapt)","error_subtype":"invalid_rapt"}"#;
+        let server = MockServer::start(vec![Reply::json(400, refusal)]);
+        let path = adc_file("reauth", USER_ADC);
+        let (auth, runs) = auth(Some(path.clone()), &server, Ok("ya29.from-gcloud"));
+        assert_eq!(auth.token().unwrap(), "ya29.from-gcloud");
+        let how = auth.describe().unwrap();
+        assert!(how.starts_with("gcloud auth print-access-token") && how.contains("invalid_grant"), "{how}");
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert_eq!(server.requests().len(), 1, "a refusal is not retried");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn when_gcloud_also_fails_a_sign_in_is_required() {
+        let server = MockServer::start(vec![Reply::json(
+            400,
+            r#"{"error":"invalid_grant","error_description":"Token has been expired or revoked."}"#,
+        )]);
+        let path = adc_file("both", USER_ADC);
+        let (auth, _) = auth(
+            Some(path.clone()),
+            &server,
+            Err("Reauthentication failed. cannot prompt during non-interactive execution."),
+        );
+        let e = auth.token().unwrap_err();
+        assert!(e.is_login_required(), "{e:?}");
+        let text = e.to_string();
+        assert!(text.contains("invalid_grant") && text.contains("Reauthentication failed"), "{text}");
+        assert!(!text.contains("1//refresh") && !text.contains("shh"), "{text}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn server_errors_are_retried_and_network_failures_are_not_a_sign_in() {
+        let server = MockServer::start(vec![
+            Reply::json(503, "{}"),
+            Reply::json(200, r#"{"access_token":"ya29.after-retry","expires_in":3599}"#),
+        ]);
+        let path = adc_file("retry", USER_ADC);
+        let (auth, runs) = auth(Some(path.clone()), &server, Err("unused"));
+        assert_eq!(auth.token().unwrap(), "ya29.after-retry");
+        assert_eq!(server.requests().len(), 2);
+
+        // Nothing listens there: a network error, without asking gcloud.
+        let unreachable = Auth::new(Some(path.clone()), "http://127.0.0.1:9/token".into(), Box::new(|| Ok("x".into())));
+        let e = unreachable.token().unwrap_err();
+        assert!(matches!(e, GcpError::Network(_)), "{e:?}");
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn the_gcloud_fallback_decision() {
+        let refused = |code: &str, message: &str| {
+            AdcOutcome::Refused(GcpError::Api { status: 400, code: code.into(), message: message.into() })
+        };
+        let ask = |outcome: AdcOutcome| match decide(outcome) {
+            Next::AskGcloud(reason) => Some(reason),
+            _ => None,
+        };
+        assert!(matches!(decide(AdcOutcome::Token("t".into(), 3600.0)), Next::Use(t, _) if t == "t"));
+        assert!(matches!(decide(AdcOutcome::Failed(GcpError::Network("reset".into()))), Next::Fail(_)));
+        assert!(ask(AdcOutcome::Missing).unwrap().contains("no Application Default Credentials"));
+        assert!(ask(AdcOutcome::Other("service_account".into())).unwrap().contains("service_account"));
+        assert!(ask(AdcOutcome::Unreadable("not JSON".into())).is_some());
+        assert!(ask(refused("invalid_grant", "reauth related error (invalid_rapt)")).unwrap().contains("invalid_rapt"));
+
+        // What counts as a refusal of the refresh token.
+        let api = |status: u16, code: &str, message: &str| GcpError::Api {
+            status,
+            code: code.into(),
+            message: message.into(),
+        };
+        assert!(is_refusal(&api(400, "invalid_grant", "Token has been expired or revoked.")));
+        assert!(is_refusal(&api(400, "invalid_rapt", "")));
+        assert!(is_refusal(&api(500, "HTTP500", "Reauthentication required")));
+        assert!(is_refusal(&api(401, "invalid_client", "The OAuth client was deleted.")));
+        assert!(!is_refusal(&api(503, "HTTP503", "unavailable")));
+        assert!(!is_refusal(&GcpError::Network("connection reset".into())));
+    }
+
+    #[test]
+    fn what_the_adc_file_holds() {
+        assert!(matches!(read_adc(None), Adc::Missing));
+        assert!(matches!(read_adc(Some(Path::new("/nonexistent/gcli/adc.json"))), Adc::Missing));
+        let p = adc_file("sa", r#"{"type":"service_account","private_key":"-----BEGIN"}"#);
+        assert!(matches!(read_adc(Some(&p)), Adc::Other(k) if k == "service_account"));
+        std::fs::write(&p, "not json").unwrap();
+        assert!(matches!(read_adc(Some(&p)), Adc::Unreadable(_)));
+        std::fs::write(&p, r#"{"type":"authorized_user","client_id":"c"}"#).unwrap();
+        assert!(matches!(read_adc(Some(&p)), Adc::Unreadable(_)));
+        std::fs::write(&p, USER_ADC).unwrap();
+        assert!(matches!(read_adc(Some(&p)), Adc::User { ref refresh_token, .. } if refresh_token == "1//refresh"));
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn missing_adc_uses_gcloud_and_caches_its_token() {
+        let server = MockServer::start(Vec::new());
+        let (auth, runs) = auth(None, &server, Ok("ya29.gcloud"));
+        assert_eq!(auth.token().unwrap(), "ya29.gcloud");
+        assert_eq!(auth.token().unwrap(), "ya29.gcloud");
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "kept for 50 minutes");
+        assert!(server.requests().is_empty());
+    }
+}

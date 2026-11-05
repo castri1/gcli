@@ -225,3 +225,18 @@ pub fn cleanup() {
         let _ = std::fs::remove_file(exe.with_extension("exe.old"));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compares_versions() {
+        assert!(is_newer("v2.2.0", "2.1.0"));
+        assert!(is_newer("v2.10.0", "2.9.9"));
+        assert!(is_newer("3.0", "2.9.9"));
+        assert!(!is_newer("v2.1.0", "2.1.0"));
+        assert!(!is_newer("v2.0.9", "2.1.0"));
+        assert!(!is_newer("garbage", "2.1.0"));
+    }
+}

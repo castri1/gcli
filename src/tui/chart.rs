@@ -235,3 +235,46 @@ impl<'a> Chart<'a> {
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(lines: &[Line]) -> Vec<String> {
+        lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect()
+    }
+
+    #[test]
+    fn groups_points_into_columns() {
+        let points = [(0.0, 1.0), (1.0, 3.0), (2.0, 5.0), (3.0, 7.0)];
+        assert_eq!(columns(&points, (0.0, 4.0), 2, Agg::Sum), [Some(4.0), Some(12.0)]);
+        assert_eq!(columns(&points, (0.0, 4.0), 2, Agg::Max), [Some(3.0), Some(7.0)]);
+        assert_eq!(columns(&points, (0.0, 4.0), 2, Agg::Mean), [Some(2.0), Some(6.0)]);
+        // Fewer points than columns: each point widens instead of leaving gaps.
+        assert_eq!(columns(&points[..2], (0.0, 2.0), 4, Agg::Sum), [Some(1.0), Some(1.0), Some(3.0), Some(3.0)]);
+        assert_eq!(columns(&[], (0.0, 2.0), 3, Agg::Sum), [None, None, None]);
+    }
+
+    #[test]
+    fn draws_bars_with_a_threshold() {
+        let points = [(0.0, 2.0), (1.0, 4.0), (2.0, 8.0), (3.0, 0.0)];
+        let mut chart = Chart::new("Duration", &points, (0.0, 4.0));
+        chart.rows = 2;
+        chart.threshold = Some(6.0);
+        chart.axis = false;
+        // Scale 8: 2 → 4 eighths, 4 → 8, 8 → 16, 0 → nothing; the threshold is on the top row.
+        assert_eq!(text(&chart.lines(12)), ["Duration  ", "     6 ┤┄┄█┄", "     0 ┤▄██ "]);
+    }
+
+    #[test]
+    fn formats_values() {
+        assert_eq!(
+            [0.0, 7.0, 0.4, 82.0, 1234.0, 48_000.0, 1_500_000.0].map(fmt_count),
+            ["0", "7", "0.4", "82", "1.2k", "48k", "1.5M"]
+        );
+        assert_eq!([212.4, 1840.0, 30_000.0, 125_000.0].map(fmt_ms), ["212 ms", "1.8 s", "30 s", "2m 05s"]);
+        assert_eq!([1800.0, 3600.0, 86_400.0, 604_800.0].map(fmt_window), ["30m", "1h", "24h", "7d"]);
+        assert_eq!(sparkline(&[None, Some(0.0), Some(1.0), Some(4.0)]), " ▁▄█");
+        assert_eq!(sparkline_to(&[Some(10.0), Some(50.0), Some(100.0), Some(150.0)], 100.0), "▃▅██");
+    }
+}

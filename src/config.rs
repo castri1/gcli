@@ -367,3 +367,165 @@ impl Loaded {
         Ok(path)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// DESIGN.md's example, with made-up ids.
+    const FULL: &str = r#"
+environments:
+  platform:
+    project: acme-platform-123456
+    region: us-east1
+    production: true
+    billing:
+      account: 012345-6789AB-CDEF01
+      exportTable: acme-billing.billing_export.gcp_billing_export_resource_v1_012345_6789AB_CDEF01
+      queryProject: acme-billing       # project that runs (and pays for) the BigQuery jobs
+    apps: whiteghost                   # how apps are recognized (see "Apps")
+  sandbox:
+    project: my-sandbox
+defaults:
+  notifications: true
+  costs:
+    spikeRatio: 2.5      # yesterday vs the 14-day median of the same app
+    spikeMinUsd: 1.0
+"#;
+
+    #[test]
+    fn parses_a_full_config() {
+        let gcloud = gcloud::Properties { name: "default".into(), project: None, region: Some("europe-west1".into()) };
+        let c = parse(FULL, &gcloud).unwrap();
+        assert_eq!(c.environments.keys().collect::<Vec<_>>(), ["platform", "sandbox"]);
+        let platform = &c.environments["platform"];
+        assert_eq!((platform.project.as_str(), platform.region.as_str()), ("acme-platform-123456", "us-east1"));
+        assert!(platform.is_production("platform"));
+        assert_eq!(platform.apps, AppsConvention::Whiteghost);
+        let billing = platform.billing.as_ref().unwrap();
+        assert_eq!(billing.account, "012345-6789AB-CDEF01");
+        assert_eq!(
+            billing.export_table,
+            "acme-billing.billing_export.gcp_billing_export_resource_v1_012345_6789AB_CDEF01"
+        );
+        assert_eq!(billing.query_project, "acme-billing");
+        // Left out: the gcloud region, run apps, no billing, not production.
+        let sandbox = &c.environments["sandbox"];
+        assert_eq!(sandbox.region, "europe-west1");
+        assert_eq!(sandbox.apps, AppsConvention::Run);
+        assert!(sandbox.billing.is_none() && !sandbox.is_production("sandbox"));
+        // Defaults fill what the file leaves out.
+        assert!(c.defaults.notifications);
+        assert_eq!(c.defaults.costs.spike_ratio, 2.5);
+        assert_eq!((c.defaults.costs.spike_min_usd, c.defaults.costs.new_app_min_usd), (1.0, 2.0));
+    }
+
+    #[test]
+    fn defaults_without_a_defaults_section() {
+        let c = parse("environments:\n  dev:\n    project: p\n", &gcloud::Properties::default()).unwrap();
+        assert!(c.defaults.notifications);
+        assert_eq!(
+            (c.defaults.costs.spike_ratio, c.defaults.costs.spike_min_usd, c.defaults.costs.new_app_min_usd),
+            (2.0, 1.0, 2.0)
+        );
+        assert_eq!(c.environments["dev"].summary(), "p · all regions");
+    }
+
+    #[test]
+    fn production_is_explicit_or_guessed() {
+        let env = |production: Option<bool>, project: &str| Environment {
+            project: project.into(),
+            production,
+            ..Default::default()
+        };
+        assert!(env(None, "acme-prod-1").is_production("main"));
+        assert!(env(None, "p").is_production("prod"));
+        assert!(!env(None, "p").is_production("staging"));
+        assert!(!env(Some(false), "acme-prod").is_production("prod"));
+        assert!(env(Some(true), "p").is_production("dev"));
+    }
+
+    #[test]
+    fn invalid_configs_say_why() {
+        let none = gcloud::Properties::default();
+        let err = |yaml: &str| format!("{:#}", parse(yaml, &none).unwrap_err());
+        assert!(err("environments: {}\n").contains("no environments"));
+        assert!(err("environments:\n  dev:\n    region: us-east1\n").contains("'dev' has no project"));
+        assert!(
+            err("environments:\n  dev:\n    project: p\n    billing:\n      exportTable: just-a-table\n")
+                .contains("project.dataset.table")
+        );
+        assert!(err("environments:\n  dev:\n    project: p\n    apps: kubernetes\n").contains("kubernetes"));
+        assert!(
+            err("environments:\n  dev:\n    project: p\ndefaults:\n  costs:\n    spikeRatio: 0.5\n")
+                .contains("spikeRatio")
+        );
+    }
+
+    #[test]
+    fn names_are_sanitized() {
+        let c =
+            parse("environments:\n  \"dev\\e[31m\":\n    project: \"p\\e]0;x\\a1\"\n", &gcloud::Properties::default())
+                .unwrap();
+        assert_eq!(c.environments.keys().next().map(String::as_str), Some("dev"));
+        assert_eq!(c.environments["dev"].project, "p1");
+    }
+
+    #[test]
+    fn without_a_file_the_gcloud_configuration_is_the_environment() {
+        let props = gcloud::Properties {
+            name: "default".into(),
+            project: Some("acme-platform-123456".into()),
+            region: Some("us-east1".into()),
+        };
+        let c = from_gcloud(&props);
+        assert_eq!(c.environments.len(), 1);
+        let env = &c.environments["acme-platform-123456"];
+        assert_eq!(
+            (env.project.as_str(), env.region.as_str(), env.apps),
+            ("acme-platform-123456", "us-east1", AppsConvention::Run)
+        );
+        // No project set in gcloud: no environment.
+        assert!(from_gcloud(&gcloud::Properties::default()).environments.is_empty());
+    }
+
+    #[test]
+    fn edits_keep_unknown_keys() {
+        let dir = std::env::temp_dir().join(format!("gcli-config-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.yaml");
+        std::fs::write(
+            &path,
+            "# a comment\nenvironments:\n  dev:\n    project: p-dev\n    region: us-east1\n    team: platform\n    billing:\n      account: A\n      futureKey: 7\ndefaults:\n  notifications: false\n  pollSeconds: 30\nextra:\n  - kept\n",
+        )
+        .unwrap();
+        let mut loaded = load(Some(&path)).unwrap();
+        let (_, created) =
+            loaded.set_env("dev", &EnvChange { region: Some("europe-west1".into()), ..Default::default() }).unwrap();
+        assert!(!created);
+        let (_, created) = loaded
+            .set_env(
+                "prod",
+                &EnvChange { project: Some("p-prod".into()), region: Some("us-east1".into()), production: Some(true) },
+            )
+            .unwrap();
+        assert!(created);
+        let c = &loaded.config;
+        assert_eq!(c.environments.keys().collect::<Vec<_>>(), ["dev", "prod"]);
+        assert_eq!(
+            (c.environments["dev"].project.as_str(), c.environments["dev"].region.as_str()),
+            ("p-dev", "europe-west1")
+        );
+        assert!(c.environments["prod"].is_production("prod"));
+        assert!(!c.defaults.notifications);
+        let text = std::fs::read_to_string(&path).unwrap();
+        for kept in ["team: platform", "futureKey: 7", "pollSeconds: 30", "- kept"] {
+            assert!(text.contains(kept), "{kept} in {text}");
+        }
+        assert!(std::fs::read_to_string(path.with_extension("yaml.bak")).unwrap().contains("europe-west1"));
+        // A change that would break the file is refused and leaves it alone.
+        assert!(loaded.set_env("broken", &EnvChange::default()).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

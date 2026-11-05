@@ -307,3 +307,58 @@ pub fn base64(input: &[u8]) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dates_round_trip() {
+        assert_eq!(parse_rfc3339("2015-08-30T12:36:00Z"), Some(1_440_938_160.0));
+        assert_eq!(parse_rfc3339("2015-08-30T12:36:00UTC"), Some(1_440_938_160.0));
+        assert_eq!(parse_rfc3339("2015-08-30T14:36:00.000+0200"), Some(1_440_938_160.0));
+        assert_eq!(parse_rfc3339("2015-08-30T12:36:00.5Z"), Some(1_440_938_160.5));
+        // Google Cloud writes nanoseconds.
+        assert_eq!(parse_rfc3339("2015-08-30T12:36:00.250000000Z"), Some(1_440_938_160.25));
+        assert_eq!(fmt_utc(1_440_938_160.0), "2015-08-30 12:36 UTC");
+        assert_eq!(parse_rfc3339("2024-02-29T00:00:00Z").map(|s| s as i64), Some(1_709_164_800));
+    }
+
+    #[test]
+    fn encodings() {
+        assert_eq!(base64(b"hello"), "aGVsbG8=");
+        assert_eq!(base64(b"hi!"), "aGkh");
+        assert_eq!(uri_encode("a b/c~"), "a%20b%2Fc~");
+        assert_eq!(hex(&[0, 0xab, 0x10]), "00ab10");
+        assert_eq!(sanitize("\u{1b}[32mok\u{1b}[0m\tdone"), "ok\tdone");
+        assert_eq!(sanitize("a\u{1b}]52;c;ZXZpbA==\u{7}b\rc\u{8}\u{9b}2Jd\n"), "abc2Jd\n");
+        assert_eq!(sanitize("title\u{1b}]0;x\u{1b}\\ok\u{1b}c"), "titleok");
+        assert_eq!(sanitize("fix \u{202e}gnp.exe\u{200b}"), "fix gnp.exe");
+    }
+
+    #[test]
+    fn json_strings_and_keys_are_sanitized() {
+        let mut v = serde_json::json!({ "label\u{1b}[31m": ["ok\u{202e}", { "k": "a\u{1b}]52;c;aGk=\u{7}b" }] });
+        sanitize_json(&mut v);
+        assert_eq!(v, serde_json::json!({ "label": ["ok", { "k": "ab" }] }));
+    }
+
+    #[test]
+    fn hidden_characters_are_dropped() {
+        // Tag characters spell text no one sees: "ignore" hidden after "ok".
+        let tagged: String =
+            "ok".chars().chain("ignore".chars().map(|c| char::from_u32(0xE0000 + c as u32).unwrap())).collect();
+        assert_eq!(sanitize(&tagged), "ok");
+        assert_eq!(sanitize("a\u{00ad}b\u{180e}c\u{2028}d\u{2029}e\u{206a}f\u{fff9}g\u{e0001}h"), "abcdefgh");
+        // Emoji keep their variation selector; tabs and newlines stay.
+        assert_eq!(sanitize("❤\u{fe0f}\tx\ny"), "❤\u{fe0f}\tx\ny");
+        assert!(is_unsafe('\u{e007f}') && !is_unsafe('\u{fe0f}'));
+    }
+
+    #[test]
+    fn durations() {
+        assert_eq!(fmt_duration(45.0), "45s");
+        assert_eq!(fmt_duration(154.0), "2m 34s");
+        assert_eq!(fmt_duration(3900.0), "1h 05m");
+    }
+}

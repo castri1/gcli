@@ -262,3 +262,43 @@ impl LogView {
         f.render_widget(Paragraph::new(Line::from(spans)).style(Style::new()), status);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::crossterm::event::KeyModifiers;
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn finds_errors_and_matches() {
+        let mut v = LogView { zoomed: true, page: 5, ..LogView::default() };
+        v.extend((0..100).map(|i| match i {
+            40 => "Error: boom".to_string(),
+            70 => "needle here".to_string(),
+            _ => format!("line {i}"),
+        }));
+        v.top = Some(0);
+        v.key(key('e'));
+        assert_eq!(v.top, Some(37));
+        v.key(key('/'));
+        for c in "NEEDLE".chars() {
+            v.key(key(c));
+        }
+        v.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(v.top, Some(67));
+        assert!(matches!(v.key(key('y')), LogKey::Copy));
+        v.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!v.zoomed);
+    }
+
+    #[test]
+    fn keeps_a_bounded_number_of_lines() {
+        let mut v = LogView::default();
+        v.extend((0..MAX_LINES + 10).map(|i| i.to_string()));
+        assert_eq!(v.lines().len(), MAX_LINES);
+        assert_eq!(v.lines()[0], "10");
+    }
+}

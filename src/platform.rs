@@ -112,3 +112,24 @@ pub fn copy_to_clipboard(text: &str) -> bool {
     let mut out = std::io::stdout();
     write!(out, "\u{1b}]52;c;{}\u{7}", crate::util::base64(text.as_bytes())).is_ok() && out.flush().is_ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opens_only_web_urls() {
+        assert!(is_web_url("https://console.cloud.google.com/run/detail/us-east1/app?project=p"));
+        assert!(is_web_url("http://127.0.0.1:47123/bucket/key"));
+        for bad in [
+            "file:///etc/passwd",
+            "/Applications/Calculator.app",
+            "smb://host/share",
+            "https://",
+            "javascript:alert(1)",
+            "https://a b",
+        ] {
+            assert!(!is_web_url(bad), "{bad}");
+        }
+    }
+}

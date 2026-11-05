@@ -15,6 +15,8 @@ pub mod auth;
 pub mod error;
 pub mod gcloud;
 pub mod http;
+#[cfg(test)]
+pub mod mock;
 pub mod run;
 
 use std::collections::HashSet;
@@ -257,4 +259,162 @@ fn clean(value: &mut Value) {
 /// The Cloud console page `path` of `project` (`run/detail/us-east1/app`).
 pub fn console_url(project: &str, path: &str) -> String {
     format!("https://console.cloud.google.com/{path}?project={}", uri_encode(project))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mock::{MockServer, Reply};
+    use super::*;
+
+    fn client(server: &MockServer) -> Arc<Gcp> {
+        Gcp::with("my-project", "us-east1", auth::tests::fixed("ya29.test"), Some(server.url()))
+    }
+
+    #[test]
+    fn urls_follow_the_api_root() {
+        let url = "https://run.googleapis.com/v2/projects/p/locations/us-east1/services";
+        assert_eq!(api_url(None, url), url);
+        assert_eq!(
+            api_url(Some("http://127.0.0.1:8080"), url),
+            "http://127.0.0.1:8080/run/v2/projects/p/locations/us-east1/services"
+        );
+        assert_eq!(
+            api_url(Some("http://localhost:1"), "https://oauth2.googleapis.com/token"),
+            "http://localhost:1/oauth2/token"
+        );
+        // Only Google APIs move.
+        assert_eq!(api_url(Some("http://localhost:1"), "https://api.github.com/repos"), "https://api.github.com/repos");
+    }
+
+    #[test]
+    fn pages_are_followed_until_the_last() {
+        let server = MockServer::start(vec![
+            Reply::json(200, r#"{"items":[{"name":"a"},{"name":"b"}],"nextPageToken":"t/2"}"#),
+            Reply::json(200, r#"{"items":[{"name":"c"}],"nextPageToken":"t3"}"#),
+            Reply::json(200, r#"{"items":[{"name":"d","note":null}]}"#),
+        ]);
+        #[derive(serde::Deserialize)]
+        struct Item {
+            name: String,
+            #[serde(default)]
+            note: String,
+        }
+        let gcp = client(&server);
+        let items: Vec<Item> = gcp
+            .list("https://example.googleapis.com/v1/items", &[("pageSize", "2")], "items", Opts::default())
+            .unwrap();
+        assert_eq!(items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(), ["a", "b", "c", "d"]);
+        assert_eq!(items[3].note, "");
+        let paths: Vec<String> = server.requests().iter().map(|r| r.path.clone()).collect();
+        assert_eq!(
+            paths,
+            [
+                "/example/v1/items?pageSize=2",
+                "/example/v1/items?pageSize=2&pageToken=t%2F2",
+                "/example/v1/items?pageSize=2&pageToken=t3"
+            ]
+        );
+        assert_eq!(server.requests()[0].header("authorization"), Some("Bearer ya29.test"));
+        assert_eq!(server.requests()[0].header("x-goog-user-project"), None);
+    }
+
+    #[test]
+    fn a_repeated_page_token_ends_the_list() {
+        let server = MockServer::start(vec![
+            Reply::json(200, r#"{"items":[1],"nextPageToken":"same"}"#),
+            Reply::json(200, r#"{"items":[2],"nextPageToken":"same"}"#),
+        ]);
+        let items: Vec<u32> =
+            client(&server).list("https://x.googleapis.com/v1/i", &[], "items", Opts::default()).unwrap();
+        assert_eq!(items, [1, 2]);
+        // Stopping early.
+        let server = MockServer::start(vec![Reply::json(200, r#"{"items":[1],"nextPageToken":"more"}"#)]);
+        let mut pages = 0;
+        client(&server)
+            .pages("https://x.googleapis.com/v1/i", &[], "items", Opts::default(), |_: Vec<u32>| {
+                pages += 1;
+                false
+            })
+            .unwrap();
+        assert_eq!((pages, server.requests().len()), (1, 1));
+    }
+
+    #[test]
+    fn retries_server_errors_and_maps_google_errors() {
+        let server = MockServer::start(vec![
+            Reply::json(503, r#"{"error":{"code":503,"status":"UNAVAILABLE","message":"try again"}}"#),
+            Reply::json(429, r#"{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"slow down"}}"#),
+            Reply::json(200, r#"{"ok":true}"#),
+            Reply::json(
+                403,
+                r#"{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Permission denied on resource project my-project."}}"#,
+            ),
+        ]);
+        let gcp = client(&server);
+        let v: Value = gcp.get("https://run.googleapis.com/v2/x", &[]).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(server.requests().len(), 3);
+        let e = gcp.get::<Value>("https://run.googleapis.com/v2/x", &[]).unwrap_err();
+        assert!(matches!(&e, GcpError::Api { status: 403, code, .. } if code == "PERMISSION_DENIED"), "{e:?}");
+        assert_eq!(server.requests().len(), 4, "a 403 is not retried");
+    }
+
+    #[test]
+    fn changes_are_not_repeated_after_a_server_error() {
+        let server = MockServer::start(vec![
+            Reply::json(500, r#"{"error":{"code":500,"status":"INTERNAL","message":"boom"}}"#),
+            Reply::json(200, "{}"),
+        ]);
+        let gcp = client(&server);
+        let e = gcp
+            .post::<Value>("https://run.googleapis.com/v2/x:run", &serde_json::json!({}), Opts::default())
+            .unwrap_err();
+        assert!(matches!(e, GcpError::Api { status: 500, .. }));
+        assert_eq!(server.requests().len(), 1);
+        // Unless the caller says it is safe, and with the quota project as asked.
+        let server = MockServer::start(vec![Reply::json(500, "{}"), Reply::json(200, r#"{"done":true}"#)]);
+        let gcp = client(&server);
+        let opts = Opts { quota_project: Some("billing-project"), idempotent: true };
+        let v: Value = gcp
+            .post(
+                "https://bigquery.googleapis.com/bigquery/v2/projects/p/queries",
+                &serde_json::json!({"query": "SELECT 1"}),
+                opts,
+            )
+            .unwrap();
+        assert_eq!(v["done"], true);
+        let r = &server.requests()[1];
+        assert_eq!((r.method.as_str(), r.path.as_str()), ("POST", "/bigquery/bigquery/v2/projects/p/queries"));
+        assert_eq!(r.header("x-goog-user-project"), Some("billing-project"));
+        assert_eq!(r.header("content-type"), Some("application/json"));
+        assert_eq!(r.body, r#"{"query":"SELECT 1"}"#);
+    }
+
+    #[test]
+    fn a_refused_token_is_renewed_once_then_a_sign_in_is_required() {
+        let unauthenticated = r#"{"error":{"code":401,"status":"UNAUTHENTICATED","message":"Request had invalid authentication credentials."}}"#;
+        let server = MockServer::start(vec![Reply::json(401, unauthenticated), Reply::json(200, r#"{"ok":1}"#)]);
+        let gcp = client(&server);
+        assert!(gcp.get::<Value>("https://run.googleapis.com/v2/x", &[]).is_ok());
+        server.push(Reply::json(401, unauthenticated));
+        server.push(Reply::json(401, unauthenticated));
+        let e = gcp.get::<Value>("https://run.googleapis.com/v2/x", &[]).unwrap_err();
+        assert!(e.is_login_required(), "{e:?}");
+        assert!(!e.to_string().contains("ya29"), "{e}");
+    }
+
+    #[test]
+    fn responses_are_cleaned() {
+        let server =
+            MockServer::start(vec![Reply::json(200, "{\"name\":\"svc\\u001b]52;c;aGk=\\u0007x\",\"labels\":null}")]);
+        #[derive(serde::Deserialize)]
+        struct S {
+            name: String,
+            #[serde(default)]
+            labels: std::collections::HashMap<String, String>,
+        }
+        let s: S = client(&server).get("https://run.googleapis.com/v2/s", &[]).unwrap();
+        assert_eq!(s.name, "svcx");
+        assert!(s.labels.is_empty());
+    }
 }

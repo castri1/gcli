@@ -319,3 +319,65 @@ impl Form {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn press(form: &mut Form, code: KeyCode) -> FormEvent {
+        form.handle(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    fn typing(form: &mut Form, text: &str) {
+        for c in text.chars() {
+            press(form, KeyCode::Char(c));
+        }
+    }
+
+    #[test]
+    fn fills_validates_and_confirms() {
+        let mut form = Form::new(
+            "New",
+            vec![
+                Field::text("Name", "/app/"),
+                Field::choice("Type", &["String", "SecureString"], "String"),
+                Field::secret("Value", ""),
+                Field::text("Description", "").optional("optional"),
+            ],
+        )
+        .confirm_with("prod");
+        typing(&mut form, "db");
+        press(&mut form, KeyCode::Tab);
+        press(&mut form, KeyCode::Right);
+        press(&mut form, KeyCode::Tab);
+        form.paste("line1\nline2");
+        press(&mut form, KeyCode::Tab);
+        press(&mut form, KeyCode::Tab);
+        typing(&mut form, "pro");
+        assert!(matches!(press(&mut form, KeyCode::Enter), FormEvent::Pending));
+        typing(&mut form, "d");
+        assert!(matches!(press(&mut form, KeyCode::Enter), FormEvent::Submit));
+        assert_eq!(form.get("Name"), "/app/db");
+        assert_eq!(form.get("Type"), "SecureString");
+        assert_eq!(form.get("Value"), "line1\nline2");
+        assert_eq!(form.get("Description"), "");
+    }
+
+    #[test]
+    fn enter_can_submit_from_any_field() {
+        let mut form =
+            Form::new("Find", vec![Field::text("Key", "c-1"), Field::text("Sort", "").optional("")]).enter_submits();
+        assert!(matches!(press(&mut form, KeyCode::Enter), FormEvent::Submit));
+        let mut form = form.confirm_with("prod");
+        assert!(matches!(press(&mut form, KeyCode::Enter), FormEvent::Pending));
+        assert_eq!(form.error.as_deref(), Some("Type 'prod' to confirm"));
+    }
+
+    #[test]
+    fn required_fields_block_submit() {
+        let mut form = Form::new("New", vec![Field::text("Name", ""), Field::secret("Value", "")]);
+        press(&mut form, KeyCode::Tab);
+        assert!(matches!(press(&mut form, KeyCode::Enter), FormEvent::Pending));
+        assert_eq!(form.error.as_deref(), Some("Name is required"));
+    }
+}

@@ -186,3 +186,63 @@ fn explain_failure(stderr: &str) -> Option<String> {
     };
     Some(super::error::redact(line)).filter(|l| !l.is_empty())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gcloud_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("gcli-gcloud-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("configurations")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn reads_the_active_configuration() {
+        let dir = gcloud_dir("active");
+        std::fs::write(dir.join("active_config"), "work\n").unwrap();
+        std::fs::write(
+            dir.join("configurations/config_work"),
+            "[core]\nproject = my-project-123\naccount = me@example.com\n\n[compute]\nzone = us-central1-c\nregion = us-central1\n\n[run]\nregion = us-east1\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("configurations/config_default"), "[core]\nproject = other\n").unwrap();
+        let p = properties_in(&dir, None);
+        assert_eq!(
+            p,
+            Properties { name: "work".into(), project: Some("my-project-123".into()), region: Some("us-east1".into()) }
+        );
+        // Without run/region, compute/region; another configuration when asked for.
+        let p = properties_in(&dir, Some("default".into()));
+        assert_eq!((p.project.as_deref(), p.region), (Some("other"), None));
+        std::fs::write(
+            dir.join("configurations/config_work"),
+            "[core]\nproject = p\n[compute]\nregion = europe-west1\n",
+        )
+        .unwrap();
+        assert_eq!(properties_in(&dir, None).region.as_deref(), Some("europe-west1"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn missing_or_odd_configurations_give_nothing() {
+        let dir = gcloud_dir("missing");
+        assert_eq!(properties_in(&dir, None), Properties { name: "default".into(), ..Default::default() });
+        std::fs::write(dir.join("active_config"), "../../etc/passwd").unwrap();
+        assert_eq!(properties_in(&dir, None).project, None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn gcloud_errors_are_short() {
+        let stderr = "WARNING: something\nERROR: (gcloud.auth.print-access-token) There was a problem refreshing your current auth tokens: Reauthentication failed. cannot prompt during non-interactive execution.\nPlease run:\n\n  $ gcloud auth login\n";
+        assert_eq!(
+            explain_failure(stderr).as_deref(),
+            Some(
+                "There was a problem refreshing your current auth tokens: Reauthentication failed. cannot prompt during non-interactive execution."
+            )
+        );
+        assert_eq!(explain_failure("").as_deref(), None);
+    }
+}
