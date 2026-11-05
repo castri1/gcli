@@ -9,10 +9,11 @@ Its first job: knowing what each app costs and why, catching a cost spike the da
 starts, and seeing an app's health, deploys, logs and secrets in one place. See
 [DESIGN.md](DESIGN.md) for where it is going.
 
-**Status: M0.** The shell (header, `:` palette, environment switch, toasts, help, sign-in),
+**Status: M1.** The shell (header, `:` palette, environment switch, toasts, help, sign-in),
 the Google Cloud client (Application Default Credentials with a gcloud fallback, retries, page
-tokens) and a first **Apps** module that lists an environment's Cloud Run services. Costs,
-the full Apps module, Builds and Logs come next (M1–M3).
+tokens), a first **Apps** module that lists an environment's Cloud Run services, and **Costs**
+(the billing export: month to date, budgets, services and SKUs, apps, spikes). The full Apps
+module, Builds and Logs come next (M2–M3).
 
 ```
  ◆ gcli   1 Apps                                                    ● prod acme-prod-123456 · us-east1
@@ -55,6 +56,8 @@ gcli login                 # gcloud auth login --update-adc (a browser opens)
 gcli                       # the UI, in the current environment
 gcli prod                  # the UI, in that environment
 gcli apps [ENV] [--json]   # the environment's Cloud Run services
+gcli costs [ENV] [--by service|app|sku] [--month YYYY-MM] [--days N] [--refresh] [--json]
+gcli costs [ENV] --check [--date YYYY-MM-DD]   # exit 1 when an app or shared service spiked
 gcli envs [--json]         # the environments, and which one is current
 gcli use [ENV]             # set the current environment
 gcli add [NAME] [--project ID] [--region R] [--production]   # add an environment to the config
@@ -66,6 +69,37 @@ gcli mcp [--env NAME]      # MCP server on stdio: claude mcp add gcli -- gcli mc
 |---|---|
 | Everywhere | `:` / `Ctrl+K` go to a module or an environment · `Tab` / `1`-`9` switch module · `e` environment · `L` sign in (suspends the UI and runs gcloud) · `?` help · `q` quit |
 | Apps | `↑↓` move · `/` search · `y` copy the URL · `o` open in the Cloud console · `r` reload |
+| Costs | `←→` Overview / By service / By app / Spikes · `↑↓` move · `Enter` a service's SKUs · `r` read again |
+
+### Costs
+
+Costs reads the detailed billing export (`billing.exportTable`, the resource-level one) in
+BigQuery: the environment's project per UTC day, service, app (Cloud Run service) and SKU, and
+the billing account's months for budgets and credits. Gross leaves credits out, net counts them.
+
+- **Days are UTC.** The export runs about 4 hours behind (Cloud Storage and Cloud Scheduler
+  about 12): today is partial, and comparisons, forecasts and spikes stop at the last complete
+  day.
+- **Apps.** Only Cloud Run rows name an app (`resource.name`, the service). Cloud SQL, Secret
+  Manager, Artifact Registry, Cloud Build, the load balancer and the rest are shown as shared,
+  per service, never spread over the apps.
+- **Spikes.** An app spikes on a complete day when it costs more than `spikeRatio` × the median
+  of the 14 days before (the days it ran) and more than `spikeMinUsd`; with no cost in those 14
+  days, more than `newAppMinUsd`. Shared services are checked as a whole the same way.
+- **Budgets.** The Budget API returns no spend: each budget's is summed from the export with its
+  own filters (projects, services, credits). It needs the Cloud Billing Budget API enabled in the
+  environment's project and `roles/billing.viewer` on the billing account.
+- **Billed reads.** BigQuery bills the bytes scanned (queries read only the export days they
+  need). A read is dry-run first and priced ("≈ 900 MB, US$ 0.0051"); it runs on its own when
+  what was read is older than `autoRefreshHours` and the price is under `autoRefreshMaxUsd`,
+  otherwise it asks (`--refresh` reads anyway). Every query is counted in
+  `~/.gcli/costs/ledger.json`. What was read is kept in `~/.gcli/costs/<env>/`, with
+  `apps.json` (each app's month to date, last complete day, 14-day median, spike) for other tools.
+- **MCP.** `costs_summary` and `cost_spikes` answer from what was kept and never query BigQuery;
+  when it is missing or older than a day they ask for `gcli costs <env> --refresh`.
+
+Reading needs `roles/bigquery.jobUser` on `billing.queryProject` and `roles/bigquery.dataViewer`
+on the export's dataset.
 
 ### Credentials
 
@@ -106,6 +140,9 @@ defaults:
     spikeRatio: 2.0      # yesterday vs the 14-day median of the same app
     spikeMinUsd: 1.0     # ignore spikes smaller than this per day
     newAppMinUsd: 2.0    # an app with no history that costs more than this per day
+    autoRefreshHours: 6  # Costs reads the export again when what it read is older than this…
+    autoRefreshMaxUsd: 0.05   # …and the dry run prices the read under this; otherwise it asks
+    bigqueryUsdPerTib: 6.25   # BigQuery's on-demand price, to price a read before it runs
 ```
 
 Only `project` is required. Without `region`, the active gcloud configuration's (`run/region`,

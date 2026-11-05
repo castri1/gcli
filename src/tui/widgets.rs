@@ -44,7 +44,6 @@ pub fn popup(f: &mut Frame, area: Rect, title: &str, color: Color, body: Text) {
 }
 
 /// `███████░░░░` filled to `ratio`.
-#[allow(dead_code)] // budgets spent (Costs, M1)
 pub fn progress_bar(ratio: f64, width: usize, color: Color) -> Vec<Span<'static>> {
     let filled = ((ratio.clamp(0.0, 1.0) * width as f64).round() as usize).min(width);
     vec![

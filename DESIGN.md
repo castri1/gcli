@@ -89,24 +89,26 @@ added later without touching the modules.
 Reads the detailed billing export in BigQuery (Cost Explorer has no equivalent API on GCP).
 
 - **This month**: gross (credits excluded) and net (credits included), against the same complete
-  days of last month, and a straight-line forecast. Storage SKUs reach the export one or two days
-  late, so the comparison stops at the last complete day for each SKU family and never reads a
-  missing day as a drop.
+  days of last month, and a straight-line forecast. Days are UTC. The export runs about 4 hours
+  behind (Cloud Storage and Cloud Scheduler about 12), so today is partial and the comparison
+  stops at the last complete day: a missing day is never read as a drop.
 - **By service and by SKU**, with each SKU's effective rate.
-- **By app**: Cloud Run, Cloud SQL and the rest attributed to apps through the export's resource
-  name and labels; what cannot be attributed is shown as "platform/shared".
-- **Spikes**: per app, yesterday against its 14-day median; an app is flagged when it costs more
-  than `spikeRatio` × its median and more than `spikeMinUsd` that day, or when a new app costs
-  more than `newAppMinUsd`. Only fast SKU families (Cloud Run, Cloud SQL, Cloud Build) are
-  checked, because storage is late. The header shows how many apps spiked; a desktop notification
-  tells when a new one appears.
+- **By app**: only Cloud Run rows name an app (`resource.name` is the service). Cloud SQL, Secret
+  Manager, Artifact Registry, Cloud Build, the load balancer and the rest are shown as shared, per
+  service, never spread over the apps.
+- **Spikes**: per app, the last complete day against the median of the 14 days before (the days
+  it ran: an app idle on weekends is not flagged every Monday); an app is flagged when it costs
+  more than `spikeRatio` × its median and more than `spikeMinUsd` that day, or, with no cost in
+  those 14 days, more than `newAppMinUsd`. Each shared service is checked the same way as a
+  whole. The header shows how many spiked; a desktop notification tells when a new one appears.
 - **Budgets**: the Budgets API returns only their configuration, so each budget's spend is
   computed from the export with the budget's own filters (projects, services, credit treatment).
 - **Credits**: credits used per month and per type (the remaining balance is console-only and is
   never guessed).
 
-Commands: `gcli costs [env] [--by service|app|sku] [--days N] [--refresh] [--json]` and
-`gcli costs [env] --check` (exits 1 when an app spiked; for cron jobs and CI).
+Commands: `gcli costs [env] [--by service|app|sku] [--month YYYY-MM] [--days N] [--refresh]
+[--json]` and `gcli costs [env] --check [--date YYYY-MM-DD]` (exits 1 when an app spiked; for
+cron jobs and CI).
 
 Queries filter on `_PARTITIONTIME` so they scan only the days they need. A refresh shows
 "about N GB, $X" before running, unless it is under a configurable limit.

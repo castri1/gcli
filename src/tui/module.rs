@@ -170,7 +170,6 @@ impl Ctx<'_> {
     }
 
     /// Toast plus a desktop notification when enabled in the config.
-    #[allow(dead_code)] // for news that comes while you look elsewhere (cost spikes)
     pub fn notify(&mut self, level: Level, title: &str, body: &str) {
         if self.config().defaults.notifications {
             crate::platform::notify(title, body);
