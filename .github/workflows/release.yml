@@ -39,14 +39,17 @@ jobs:
           - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
           - { target: x86_64-pc-windows-msvc, os: windows-latest }
     runs-on: ${{ matrix.os }}
+    # Building runs code from the crate and its dependencies (build scripts), so this job holds
+    # no write token: the archives go to the upload job as artifacts.
     permissions:
-      contents: write
+      contents: read
     env:
       TAG: ${{ github.ref_name }}
       TARGET: ${{ matrix.target }}
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: ${{ matrix.target }}
@@ -74,18 +77,38 @@ jobs:
           Compress-Archive -Path $name -DestinationPath "$name.zip"
           (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" | Out-File -Encoding ascii "$name.zip.sha256"
 
-      # gh (preinstalled on every runner) instead of a third-party upload action.
-      - name: Upload
-        shell: bash
-        run: |
-          shopt -s nullglob
-          gh release upload "$TAG" gcli-*.tar.gz gcli-*.zip gcli-*.sha256 --clobber --repo "$GITHUB_REPOSITORY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gcli-${{ matrix.target }}
+          path: |
+            gcli-*.tar.gz
+            gcli-*.zip
+            gcli-*.sha256
+          if-no-files-found: error
+
+  # The only job that can write the release, and it runs no project or dependency code: it
+  # downloads the archives and attaches them with gh (preinstalled on every runner).
+  upload:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: gcli-*
+          path: archives
+          merge-multiple: true
+      - run: gh release upload "$TAG" archives/* --clobber --repo "$GITHUB_REPOSITORY"
 
   # Publishes @castri1/gcli and its per-platform packages, built from the archives above.
   # Uses npm trusted publishing (OIDC): no token; each package trusts this workflow
   # (npm trust github <package> --file release.yml --repo castri1/gcli --allow-publish).
   npm:
-    needs: build
+    needs: upload
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -95,6 +118,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
