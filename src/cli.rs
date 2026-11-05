@@ -77,6 +77,8 @@ pub enum Command {
         #[arg(long, conflicts_with = "json")]
         report: bool,
     },
+    /// What the environment's project costs, from the billing export (UTC days), and its spikes
+    Costs(crate::costs::command::Args),
     /// Sign in to Google Cloud (runs `gcloud auth login --update-adc`)
     Login { env: Option<String> },
     /// MCP server for Claude and other AI agents (stdio): reads Google Cloud, never changes it.
@@ -251,6 +253,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::App { app, env, json, report } => {
             crate::apps::cmd::detail(config, &env_or_current(config, env)?, &app, json, report)
         }
+        Command::Costs(args) => crate::costs::command::run(config, args),
         Command::Mcp(args) => crate::mcp::serve(&loaded, args),
     }
 }

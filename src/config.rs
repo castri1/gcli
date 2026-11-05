@@ -103,11 +103,24 @@ pub struct CostDefaults {
     pub spike_min_usd: f64,
     /// An app with no history that costs more than this a day.
     pub new_app_min_usd: f64,
+    /// Opening Costs reads the billing export again when what was read is older than this…
+    pub auto_refresh_hours: f64,
+    /// …and the dry run says the read costs less than this (USD); otherwise it asks first.
+    pub auto_refresh_max_usd: f64,
+    /// BigQuery's on-demand price per TiB scanned, to price a read before it runs.
+    pub bigquery_usd_per_tib: f64,
 }
 
 impl Default for CostDefaults {
     fn default() -> Self {
-        CostDefaults { spike_ratio: 2.0, spike_min_usd: 1.0, new_app_min_usd: 2.0 }
+        CostDefaults {
+            spike_ratio: 2.0,
+            spike_min_usd: 1.0,
+            new_app_min_usd: 2.0,
+            auto_refresh_hours: 6.0,
+            auto_refresh_max_usd: 0.05,
+            bigquery_usd_per_tib: 6.25,
+        }
     }
 }
 
@@ -257,6 +270,9 @@ impl Config {
         let sensible = c.spike_ratio >= 1.0 && c.spike_min_usd >= 0.0 && c.new_app_min_usd >= 0.0;
         if !sensible {
             bail!("defaults.costs: spikeRatio is at least 1, spikeMinUsd and newAppMinUsd at least 0");
+        }
+        if !(c.auto_refresh_hours >= 0.0 && c.auto_refresh_max_usd >= 0.0 && c.bigquery_usd_per_tib >= 0.0) {
+            bail!("defaults.costs: autoRefreshHours, autoRefreshMaxUsd and bigqueryUsdPerTib are at least 0");
         }
         Ok(())
     }
@@ -428,6 +444,11 @@ defaults:
             (c.defaults.costs.spike_ratio, c.defaults.costs.spike_min_usd, c.defaults.costs.new_app_min_usd),
             (2.0, 1.0, 2.0)
         );
+        let costs = &c.defaults.costs;
+        assert_eq!(
+            (costs.auto_refresh_hours, costs.auto_refresh_max_usd, costs.bigquery_usd_per_tib),
+            (6.0, 0.05, 6.25)
+        );
         assert_eq!(c.environments["dev"].summary(), "p · all regions");
     }
 
@@ -459,6 +480,10 @@ defaults:
         assert!(
             err("environments:\n  dev:\n    project: p\ndefaults:\n  costs:\n    spikeRatio: 0.5\n")
                 .contains("spikeRatio")
+        );
+        assert!(
+            err("environments:\n  dev:\n    project: p\ndefaults:\n  costs:\n    autoRefreshMaxUsd: -1\n")
+                .contains("autoRefreshMaxUsd")
         );
     }
 

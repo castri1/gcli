@@ -362,7 +362,10 @@ pub(super) mod tests {
         assert_eq!(init["serverInfo"]["name"], "gcli");
         assert!(init["instructions"].as_str().unwrap().contains("never changes them"));
         let tools = replies[1]["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.iter().map(|t| t["name"].as_str().unwrap()).collect::<Vec<_>>(), ["list_apps", "app_detail"]);
+        assert_eq!(
+            tools.iter().map(|t| t["name"].as_str().unwrap()).collect::<Vec<_>>(),
+            ["list_apps", "app_detail", "costs_summary", "cost_spikes"]
+        );
         for t in tools {
             assert_eq!(t["inputSchema"]["type"], "object", "{}", t["name"]);
             assert_eq!(t["annotations"]["readOnlyHint"], true, "{}", t["name"]);
