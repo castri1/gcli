@@ -9,35 +9,41 @@ fn spawn_quiet(mut cmd: Command) -> bool {
 }
 
 pub fn notify(title: &str, body: &str) {
+    // The title and body can carry text from Google Cloud (a service's name, say), so they never
+    // become part of a script: osascript gets them as `argv`, PowerShell as environment
+    // variables, notify-send as arguments after `--`.
     #[cfg(target_os = "macos")]
     {
-        let quote = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
-        let script = format!("display notification {} with title {}", quote(body), quote(title));
         let mut cmd = Command::new("osascript");
-        cmd.arg("-e").arg(script);
+        cmd.args([
+            "-e",
+            "on run argv",
+            "-e",
+            "display notification (item 2 of argv) with title (item 1 of argv)",
+            "-e",
+            "end run",
+            title,
+            body,
+        ]);
         spawn_quiet(cmd);
     }
     #[cfg(windows)]
     {
-        let quote = |s: &str| s.replace('\'', "''");
-        let script = format!(
-            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
+        const SCRIPT: &str = "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
              $t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); \
              $x = $t.GetElementsByTagName('text'); \
-             $x.Item(0).AppendChild($t.CreateTextNode('{}')) > $null; \
-             $x.Item(1).AppendChild($t.CreateTextNode('{}')) > $null; \
-             [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}}\\WindowsPowerShell\\v1.0\\powershell.exe').Show([Windows.UI.Notifications.ToastNotification]::new($t))",
-            quote(title),
-            quote(body)
-        );
+             $x.Item(0).AppendChild($t.CreateTextNode($env:GCLI_NOTIFY_TITLE)) > $null; \
+             $x.Item(1).AppendChild($t.CreateTextNode($env:GCLI_NOTIFY_BODY)) > $null; \
+             [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe').Show([Windows.UI.Notifications.ToastNotification]::new($t))";
         let mut cmd = Command::new("powershell");
-        cmd.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script]);
+        cmd.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", SCRIPT]);
+        cmd.env("GCLI_NOTIFY_TITLE", title).env("GCLI_NOTIFY_BODY", body);
         spawn_quiet(cmd);
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let mut cmd = Command::new("notify-send");
-        cmd.args(["--app-name=gcli", title, body]);
+        cmd.args(["--app-name=gcli", "--", title, body]);
         spawn_quiet(cmd);
     }
 }
