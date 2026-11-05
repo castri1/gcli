@@ -36,12 +36,16 @@ pub struct Args {
     /// Read the billing export again now (BigQuery bills the bytes scanned: the estimate is shown first)
     #[arg(long)]
     refresh: bool,
-    /// Exit 1 when an app or a shared service spiked on the last complete UTC day (for cron and CI)
+    /// Exit 1 when an app or a shared service spiked on the last complete UTC day, 2 when the
+    /// costs could not be read fresh enough to tell (for cron and CI)
     #[arg(long, conflicts_with_all = ["by", "month", "days"])]
     check: bool,
     /// With --check: the UTC day to check instead
     #[arg(long, value_name = "YYYY-MM-DD", requires = "check")]
     date: Option<String>,
+    /// With --check: accept costs read longer ago than defaults.costs.autoRefreshHours
+    #[arg(long, requires = "check")]
+    allow_stale: bool,
     #[arg(long)]
     json: bool,
 }
@@ -56,7 +60,15 @@ pub fn run(config: &Config, args: Args) -> Result<ExitCode> {
     let rule = Rule::of(&config.defaults.costs);
     let now = now_secs();
     if args.check {
-        return check(config, &env, &args, &rule, now);
+        // Any failure to read (credentials, permissions, BigQuery) means "could not tell", never
+        // the 1 that means "spikes": a cron job alerting on 1 would misread an outage.
+        return check(config, &env, &args, &rule, now).or_else(|e| {
+            eprintln!("error: {}", crate::util::sanitize(&format!("{e:#}")));
+            if e.downcast_ref::<GcpError>().is_some_and(GcpError::is_login_required) {
+                eprintln!("hint: run `{} login` (or press L in the UI)", crate::util::program());
+            }
+            Ok(ExitCode::from(STALE_EXIT))
+        });
     }
     let today = Day::of(now);
     let month = match &args.month {
@@ -173,12 +185,27 @@ fn obtain(config: &Config, env: &str, kind: Kind, refresh: bool, now: f64) -> Re
 
 // ---- --check ---------------------------------------------------------------------------------
 
+/// `--check`'s exit code when it cannot tell: distinct from 1 (spikes) so a cron job can alert
+/// on both without mistaking one for the other.
+const STALE_EXIT: u8 = 2;
+
 fn check(config: &Config, env: &str, args: &Args, rule: &Rule, now: f64) -> Result<ExitCode> {
     let date = match &args.date {
         Some(text) => Some(Day::parse(text).ok_or_else(|| anyhow!("--date is YYYY-MM-DD, not '{text}'"))?),
         None => None,
     };
     let current = obtain(config, env, Kind::Current, args.refresh, now)?;
+    // obtain() keeps an old read when reading again would cost more than autoRefreshMaxUsd. A
+    // check run by cron must not report "no spike" from it: yesterday may not be in it at all.
+    let hours = config.defaults.costs.auto_refresh_hours;
+    if date.is_none() && !args.allow_stale && current.stale(now, hours) {
+        eprintln!(
+            "error: the costs of {env} were read {} (over defaults.costs.autoRefreshHours = {hours}) and were not read again: \
+             run with --refresh, or --allow-stale to check the old read",
+            fmt_ago(current.read_at)
+        );
+        return Ok(ExitCode::from(STALE_EXIT));
+    }
     let last = current.last_complete_day().ok_or_else(|| anyhow!("no complete day was read"))?;
     let day = date.unwrap_or(last);
     if day > last {
