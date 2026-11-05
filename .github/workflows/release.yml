@@ -6,14 +6,18 @@ on:
   push:
     tags: ["v*"]
 
+# Third-party actions are pinned to commits: a moved tag must not run in a job that can write
+# releases. Only the jobs that write get `contents: write`.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # Creates the release once, so the builds only upload to it: several builds creating it
   # at the same moment fail with "already_exists".
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       TAG: ${{ github.ref_name }}
       GH_TOKEN: ${{ github.token }}
@@ -35,12 +39,15 @@ jobs:
           - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
           - { target: x86_64-pc-windows-msvc, os: windows-latest }
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     env:
       TAG: ${{ github.ref_name }}
       TARGET: ${{ matrix.target }}
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: ${{ matrix.target }}
       - if: contains(matrix.target, 'linux-musl')
@@ -67,12 +74,12 @@ jobs:
           Compress-Archive -Path $name -DestinationPath "$name.zip"
           (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" | Out-File -Encoding ascii "$name.zip.sha256"
 
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            gcli-*.tar.gz
-            gcli-*.zip
-            gcli-*.sha256
+      # gh (preinstalled on every runner) instead of a third-party upload action.
+      - name: Upload
+        shell: bash
+        run: |
+          shopt -s nullglob
+          gh release upload "$TAG" gcli-*.tar.gz gcli-*.zip gcli-*.sha256 --clobber --repo "$GITHUB_REPOSITORY"
 
   # Publishes @castri1/gcli and its per-platform packages, built from the archives above.
   # Uses npm trusted publishing (OIDC): no token; each package trusts this workflow
@@ -87,8 +94,8 @@ jobs:
       TAG: ${{ github.ref_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
