@@ -1,0 +1,31 @@
+[package]
+name = "gcli"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Terminal UI and CLI to explore and operate Google Cloud"
+license = "MIT"
+repository = "https://github.com/castri1/gcli"
+
+[[bin]]
+name = "gcli"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+indexmap = { version = "2.14.2", features = ["serde"] }
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache", "unstable-rendered-line-info"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde-saphyr = { version = "2.0.0", default-features = false, features = ["serialize", "deserialize"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+sha2 = "0.11.0"
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+
+# Small, fast binary: size-oriented optimisation, whole-program LTO, no unwinding tables.
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

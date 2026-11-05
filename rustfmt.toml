@@ -1,0 +1,3 @@
+# dcli's look: long lines, small expressions kept on one line.
+max_width = 120
+use_small_heuristics = "Max"
