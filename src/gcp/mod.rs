@@ -12,6 +12,8 @@
 //! `$GCLI_API_ROOT/oauth2/token`. For tests and local fakes.
 
 pub mod auth;
+pub mod bigquery;
+pub mod budgets;
 pub mod error;
 pub mod gcloud;
 pub mod http;
@@ -122,7 +124,6 @@ impl Gcp {
     }
 
     /// POST a JSON body (a query, an action such as `:run`).
-    #[allow(dead_code)] // used by Costs (BigQuery jobs) and the Apps actions
     pub fn post<T: DeserializeOwned>(&self, url: &str, body: &Value, opts: Opts) -> Result<T> {
         parse(&self.send("POST", url, &[], Some(body), opts)?)
     }
