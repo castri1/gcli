@@ -51,6 +51,12 @@ impl GcpError {
             || matches!(self, GcpError::Api { code, .. } if code == "UNAUTHENTICATED")
     }
 
+    /// The API is not enabled in the project: it holds nothing, as opposed to a read refused.
+    pub fn is_api_off(&self) -> bool {
+        matches!(self, GcpError::Api { status: 403, message, .. }
+            if message.contains("has not been used in project") || message.contains("SERVICE_DISABLED"))
+    }
+
     /// One-line text for status bars and toasts.
     pub fn short(&self) -> String {
         match self {

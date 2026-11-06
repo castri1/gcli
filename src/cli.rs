@@ -85,6 +85,8 @@ pub enum Command {
     Costs(crate::costs::command::Args),
     /// What an app wrote (or any Cloud Logging filter): list, search, follow, group the errors
     Logs(crate::logs::cmd::Args),
+    /// What the apps share: load balancer limits, leftover pieces, exposure, certificates, images
+    Platform(crate::infra::cmd::Args),
     /// Sign in to Google Cloud (runs `gcloud auth login --update-adc`)
     Login { env: Option<String> },
     /// MCP server for Claude and other AI agents (stdio): reads Google Cloud, never changes it.
@@ -263,6 +265,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Build(args) => crate::builds::cmd::one(config, args),
         Command::Costs(args) => crate::costs::command::run(config, args),
         Command::Logs(args) => crate::logs::cmd::run(config, args),
+        Command::Platform(args) => crate::infra::cmd::run(config, args),
         Command::Mcp(args) => crate::mcp::serve(&loaded, args),
     }
 }

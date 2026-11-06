@@ -70,6 +70,8 @@ gcli logs APP [ENV] --errors --group [--since DURATION] [--json]       # the dis
 gcli logs [ENV] --filter EXPR [...]   # anything that isn't an app, by a Cloud Logging filter
 gcli costs [ENV] [--by service|app|sku] [--month YYYY-MM] [--days N] [--refresh] [--json]
 gcli costs [ENV] --check [--date YYYY-MM-DD] [--notify]   # exit 1: a spike; 2: could not read fresh costs
+gcli platform [ENV] [--limits] [--orphans] [--exposure] [--certs] [--images] [--json]   # what the apps share
+gcli platform [ENV] --check [--json]     # exit 1: something needs attention; 2: could not read
 gcli envs [--json]         # the environments, and which one is current
 gcli use [ENV]             # set the current environment
 gcli add [NAME] [--project ID] [--region R] [--production]   # add an environment to the config
@@ -86,6 +88,7 @@ gcli mcp [--env NAME]      # MCP server on stdio: claude mcp add gcli -- gcli mc
 | A build | `↑↓` scroll the log · `z` log full screen (`/` search, `e`/`E` errors, `y` copy) · `c` copy a report for an AI agent · `r` refresh · `Esc` back |
 | Logs | `s` severity · `w` time window · `f` follow on/off · `t` the requests log · `a` another app · `r` read again · `/` search · `n` `N` next, previous · `e` `E` next, previous error · `y` copy every line · `↑↓` `g` `G` move · `Esc` `q` back |
 | Costs | `←→` Overview / By service / By app / Spikes · `↑↓` move · `Enter` a service's SKUs · `r` read again |
+| Platform | `←→` Limits / Orphans / Exposure / Certificates / Images · `↑↓` move · `/` search · `f` what needs a look · `y` copy the name · `o` open in the Cloud console · `r` reload |
 
 ### A daily cost check
 
@@ -203,6 +206,54 @@ them oldest first and polls only while the module is on screen.
 by `gcli mcp --env`. Log text is handed over as data, and only what a search needs of each entry:
 no payloads, labels or traces, as logs may hold personal data.
 
+### Platform
+
+What all the apps of a project share: the load balancer and its limits, the pieces left behind when
+an app goes, which apps can be reached without going through it, certificates and the image registry.
+Platform only reads: it never removes or changes anything, leftovers included. Everything comes from
+how resources point to each other, never from their names, and whether an app is open is worked out
+from its configuration: no request ever goes to an app.
+
+- **Limits.** Compute Engine has one quota metric per kind of load balancer, and `BACKEND_SERVICES` is
+  only the classic one's: a project on the global external load balancer reads 0 there, however many it
+  has. The metric is chosen by each backend service's scheme and protocol
+  (`GLOBAL_EXTERNAL_MANAGED_BACKEND_SERVICES`, say). A metric can lag or not count, so the figure is the
+  higher of what it reports and what was listed, and the notes say when the list decided. NEGs, URL maps
+  and the like are shown the same way. No API gives a limit for the host, path and route rules of a URL
+  map: they are counted, and shown without one.
+- **Orphans.** A backend service no URL map uses (a TCP proxy or a passthrough rule counts as use) or
+  with no backends; a NEG no backend uses, or whose Cloud Run service does not exist; a host rule all of
+  whose paths lead to services that do not exist. A failed read never makes a service look deleted.
+- **Exposure.** For each Cloud Run service: its ingress, whether a load balancer reaches it (forwarding
+  rule, proxy, URL map, backend, NEG), IAP on those backends (`iap + public` is a split of public paths),
+  and, only with ingress `all`, who may invoke it (`run.services.getIamPolicy`, a call per service).
+  **Direct** means reachable from the internet at its `run.app` URL: ingress `all`, and `allUsers` or
+  `allAuthenticatedUsers` may invoke it, or the invoker check is off, unless the URL is turned off or IAP
+  is on for the service itself. IAP on the load balancer does not cover that URL.
+- **Certificates.** Compute Engine's and Certificate Manager's, with their status and expiry.
+- **Images.** Each Artifact Registry repository's size and cleanup policies (of the environment's
+  region; without one, of every location). Policies only in dry run, or with only keep rules, delete
+  nothing, and are said so.
+
+`gcli platform ENV --check` reports, and exits by the worst of them (1 when something needs attention;
+otherwise 2 when something could not be read; 0 when all is clear):
+
+| Finding | Level |
+|---|---|
+| A backend quota at 80% / at 95% | warn / bad |
+| Orphans: how many, and their names / more than 10% of the backend quota | warn / bad |
+| Directly reachable and not in `platform.exposed`, saying what makes it so | bad |
+| In `platform.exposed` and no longer exposed, or with no such service | warn |
+| A managed certificate not `ACTIVE`; any expiring within 30 days | bad |
+| A repository with no cleanup policy that deletes anything | warn |
+
+Reading needs `roles/compute.viewer`, `roles/run.viewer`, and to see the rest, Certificate Manager's and
+Artifact Registry's viewer or reader roles. An API that is off in the project holds nothing to read, and
+is said so instead of counting as a failed read. Services are read in every region, and NEGs in every
+region that has a service or a backend naming one, or in all of them when the environment has no region.
+
+**MCP.** `platform_health` answers the same, read-only: `section` narrows it to one of them.
+
 ### Costs
 
 Costs reads the detailed billing export (`billing.exportTable`, the resource-level one) in
@@ -264,6 +315,8 @@ environments:
       exportTable: acme-billing.billing_export.gcp_billing_export_resource_v1_012345_6789AB_CDEF01
       queryProject: acme-billing         # project that runs (and pays for) the BigQuery jobs
     apps: run                            # how apps are recognized: run (default) or whiteghost
+    platform:
+      exposed: [webhooks]                # open on purpose at their run.app URL: not reported, shown as listed
   sandbox:
     project: acme-sandbox
 defaults:
@@ -285,6 +338,9 @@ Without a config file, the active gcloud configuration (its project and region) 
 environment; `gcli add` saves it. `gcli add` rewrites the file and keeps the previous version as
 `config.yaml.bak`; keys gcli does not know are kept, comments are not. The current environment
 lives in `~/.gcli/current-env`.
+
+`platform.exposed` lists the apps meant to be reachable from the internet at their `run.app` URL.
+One that is no longer exposed is reported, so the list stays honest.
 
 `GCLI_API_ROOT` sends every Google API call to another server, for tests and local fakes:
 `https://run.googleapis.com/v2/…` goes to `$GCLI_API_ROOT/run/v2/…`.

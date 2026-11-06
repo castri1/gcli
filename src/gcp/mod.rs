@@ -11,10 +11,13 @@
 //! `https://run.googleapis.com/v2/…` goes to `$GCLI_API_ROOT/run/v2/…`, the token endpoint to
 //! `$GCLI_API_ROOT/oauth2/token`. For tests and local fakes.
 
+pub mod artifacts;
 pub mod auth;
 pub mod bigquery;
 pub mod budgets;
 pub mod build;
+pub mod certmanager;
+pub mod compute;
 pub mod error;
 pub mod gcloud;
 pub mod http;

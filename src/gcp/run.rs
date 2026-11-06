@@ -31,6 +31,12 @@ pub struct Service {
     pub last_modifier: String,
     /// `INGRESS_TRAFFIC_ALL`, `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`…
     pub ingress: String,
+    /// The `run.app` URL does not resolve.
+    pub default_uri_disabled: bool,
+    /// Nobody's `run.routes.invoke` is checked: anyone who reaches it may call it.
+    pub invoker_iam_disabled: bool,
+    /// IAP on the service itself, in front of its `run.app` URL too.
+    pub iap_enabled: bool,
     pub template: Template,
     /// Service-level scaling: it applies to every revision and changes without a new one.
     pub scaling: ServiceScaling,
@@ -454,6 +460,52 @@ pub fn all_services(gcp: &Gcp) -> Result<Vec<Service>> {
     let mut all: Vec<Service> = gcp.list(&services_url(gcp), PAGE, "services", Opts::default())?;
     all.sort_by(|a, b| a.id().cmp(b.id()));
     Ok(all)
+}
+
+/// What `locations/-` answers: the services of every region at once, and the regions it could not
+/// ask. Those include, always, regions the project may not use.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct EveryRegion {
+    pub services: Vec<Service>,
+    pub unreachable: Vec<String>,
+}
+
+/// Every region's services at once. A wildcard has no pages: `pageSize` cuts its answer, with no
+/// token to go on, so asking for 100 when there are more gives 100 and says nothing. Asked for none
+/// it has given them all, but it cannot tell when it left some out: for a whole list, read each
+/// region it names with [`in_region`].
+pub fn every_region(gcp: &Gcp) -> Result<EveryRegion> {
+    gcp.get(&format!("https://run.googleapis.com/v2/projects/{}/locations/-/services", uri_encode(&gcp.project)), &[])
+}
+
+/// The services of `region`, page by page.
+pub fn in_region(gcp: &Gcp, region: &str) -> Result<Vec<Service>> {
+    let url = format!(
+        "https://run.googleapis.com/v2/projects/{}/locations/{}/services",
+        uri_encode(&gcp.project),
+        uri_encode(region)
+    );
+    gcp.list(&url, PAGE, "services", Opts::default())
+}
+
+/// An IAM policy, as who holds which role.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct IamPolicy {
+    pub bindings: Vec<IamBinding>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct IamBinding {
+    pub role: String,
+    pub members: Vec<String>,
+}
+
+/// Who holds which role on `service` (its resource name).
+pub fn iam_policy(gcp: &Gcp, service: &str) -> Result<IamPolicy> {
+    gcp.get(&format!("https://run.googleapis.com/v2/{service}:getIamPolicy"), &[])
 }
 
 /// The service `id`: read directly in the client's region, or found among every region's.

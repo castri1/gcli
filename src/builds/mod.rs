@@ -184,7 +184,7 @@ impl Deploys {
 }
 
 /// Runs `read` over `items`, a few at a time, keeping their order.
-fn read_all<T: Sync, U: Send>(items: &[T], read: impl Fn(&T) -> Result<U> + Sync) -> Vec<Result<U>> {
+pub(crate) fn read_all<T: Sync, U: Send>(items: &[T], read: impl Fn(&T) -> Result<U> + Sync) -> Vec<Result<U>> {
     let read = &read;
     let mut out = Vec::with_capacity(items.len());
     for batch in items.chunks(READS_AT_ONCE) {

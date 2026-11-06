@@ -11,6 +11,7 @@ use super::{Server, gcp_error};
 use crate::apps::health::{HELD_EXPLAINED, Range};
 use crate::apps::{Detail, Listing, Row, Sort, costs};
 use crate::builds;
+use crate::infra::{Section, Snapshot, Want};
 use crate::util::{matches_filter, now_secs, sanitize, sanitize_json};
 
 /// Text a tool returns at most: more is cut, with how to narrow it. A project's hundred-odd
@@ -32,6 +33,7 @@ const TOOLS: &[(&str, &str, bool, &str)] = &[
     ("build_failure", "Why a build failed", true, "the rest of the log is at the build's `url`"),
     ("search_logs", "Search an app's logs", true, "pass `search`, `severity` or a shorter `since`"),
     ("error_summary", "An app's distinct errors", true, "ask for a shorter `since`"),
+    ("platform_health", "What the apps of an environment share", true, "pass `section`"),
 ];
 
 pub fn exists(name: &str) -> bool {
@@ -72,6 +74,7 @@ pub fn call(s: &Server, name: &str, args: &Value) -> Output {
         "build_failure" => build_failure(s, args),
         "search_logs" => search_logs(s, args),
         "error_summary" => error_summary(s, args),
+        "platform_health" => platform_health(s, args),
         _ => Err(format!("unknown tool: {name}")),
     });
     match result {
@@ -188,6 +191,13 @@ fn schema(s: &Server, name: &str) -> Value {
         "error_summary" => {
             object(&["env", "app"], json!({ "env": env_prop(s), "app": app_prop(), "since": since_prop() }))
         }
+        "platform_health" => object(
+            &["env"],
+            json!({
+                "env": env_prop(s),
+                "section": { "type": "string", "enum": ["limits", "orphans", "exposure", "certificates", "images"], "description": "Only this section, whole (default: all of them, with only the services the internet can get to)" }
+            }),
+        ),
         _ => json!({ "type": "object" }),
     }
 }
@@ -217,6 +227,9 @@ fn description(name: &str) -> &'static str {
         }
         "error_summary" => {
             "An app's distinct errors (severity ERROR or worse): each message with its numbers, ids, hex and email addresses replaced by #, how many times it appears and when it was last seen, most frequent first. Reads the newest 1000 entries of the window and says when there were more. Start here to see what is failing, then use search_logs for the entries behind a pattern."
+        }
+        "platform_health" => {
+            "What all the apps of an environment share, and what needs attention in it (`findings`; `unread` says what could not be read, so an empty list is not an all-clear when it is not empty). The load balancer against its quotas (the metric that counts its backend services by their scheme, and when a metric reports nothing, the count from the list, said as such); orphans, derived from what points to what: backend services no URL map uses or with no backends, NEGs no backend uses or whose Cloud Run service does not exist, host rules leading to one; each service's exposure: ingress, whether a load balancer reaches it, IAP on its backends (`iap + public` is a split of public paths), who may invoke it when its ingress lets the internet in, and `direct`: reachable from the internet at its run.app URL, unless listed on purpose in `platform.exposed`; certificates; image repositories with their size and cleanup policies. All of it reads configuration: no request goes to an app, and nothing here removes or changes anything."
         }
         _ => "",
     }
@@ -418,6 +431,31 @@ fn log_query(args: &Value) -> Result<crate::logs::Query, String> {
     Ok(crate::logs::Query::app(app, since))
 }
 
+fn platform_health(s: &Server, args: &Value) -> Result<String, String> {
+    let (name, env) = s.env(args)?;
+    let gcp = s.gcp(name, env);
+    let section =
+        arg_str(args, "section").and_then(|a| Section::ALL.into_iter().find(|s| s.title().eq_ignore_ascii_case(a)));
+    let want = section.map_or(Want::ALL, Want::only);
+    let snapshot = Snapshot::load(&gcp, &env.platform.exposed, want);
+    if let Some(u) = snapshot.unread().iter().find(|u| u.error.is_login_required()) {
+        return Err(gcp_error(name, &u.error));
+    }
+    let mut out = snapshot.json(name, want, now_secs());
+    // A hundred services behind their ingress say little: `section: exposure` has them.
+    if section.is_none()
+        && let Some(rows) = out["exposure"].as_array_mut()
+    {
+        let total = rows.len();
+        rows.retain(|r| r["ingress"] == "all" || r["listed"] == true);
+        out["exposureNote"] = json!(format!(
+            "{} of {total} services here: the rest keep the internet out with their ingress. `section: exposure` has them all.",
+            out["exposure"].as_array().map_or(0, Vec::len)
+        ));
+    }
+    cloud_data(out)
+}
+
 fn search_logs(s: &Server, args: &Value) -> Result<String, String> {
     let (name, env) = s.env(args)?;
     let mut query = log_query(args)?;
@@ -446,6 +484,42 @@ mod tests {
         let r = session(s, &[request(1, "tools/call", json!({ "name": name, "arguments": args }))]);
         let result = &r[0]["result"];
         (result["content"][0]["text"].as_str().unwrap().to_string(), result["isError"].as_bool().unwrap())
+    }
+
+    #[test]
+    fn platform_health_says_what_needs_attention_and_only_reads() {
+        let fake = crate::infra::tests::platform_fake();
+        let s = server(Some(&fake));
+        let (text, error) = call_tool(&s, "platform_health", json!({ "env": "dev" }));
+        assert!(!error, "{text}");
+        assert!(text.starts_with("{\"quoted\":"), "{text}");
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["limits"][0]["metric"], "GLOBAL_EXTERNAL_MANAGED_BACKEND_SERVICES");
+        assert_eq!(v["orphans"].as_array().unwrap().len(), 4);
+        let bad: Vec<&str> = v["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| f["level"] == "bad")
+            .map(|f| f["subject"].as_str().unwrap())
+            .collect();
+        assert_eq!(bad, ["billing", "old-cert", "orders", "webhooks"], "this environment lists nothing as exposed");
+        // Only the services the internet can get to, and how to see the rest.
+        let rows: Vec<&str> =
+            v["exposure"].as_array().unwrap().iter().map(|r| r["service"].as_str().unwrap()).collect();
+        assert!(rows.contains(&"orders") && !rows.contains(&"shop"), "{rows:?}");
+        assert!(v["exposureNote"].as_str().unwrap().contains("`section: exposure`"));
+        assert!(!text.contains("ana@example.com"), "who holds a role stays out");
+        assert!(fake.requests().iter().all(|r| r.method == "GET"));
+
+        let (text, error) = call_tool(&s, "platform_health", json!({ "env": "dev", "section": "exposure" }));
+        assert!(!error, "{text}");
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["exposure"].as_array().unwrap().len(), 7);
+        assert!(v.get("limits").is_none() && v.get("exposureNote").is_none());
+
+        let (text, error) = call_tool(&s, "platform_health", json!({ "env": "dev", "section": "everything" }));
+        assert!(error && text.contains("is one of"), "{text}");
     }
 
     const SERVICES: &str = r#"{"services":[
