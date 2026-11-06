@@ -22,6 +22,13 @@ jobs:
       TAG: ${{ github.ref_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
+      # npm takes its version from the tag and `gcli --version` from Cargo.toml: a mismatch would
+      # publish a binary that always thinks an update is available.
+      - name: The tag must match Cargo.toml
+        run: |
+          version=$(gh api "repos/$GITHUB_REPOSITORY/contents/Cargo.toml?ref=$TAG" -H 'Accept: application/vnd.github.raw' |
+            sed -n 's/^version = "\(.*\)"$/\1/p' | head -1)
+          [ "$TAG" = "v$version" ] || { echo "::error::the tag is $TAG but Cargo.toml says $version"; exit 1; }
       - run: |
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 ||
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes ""
