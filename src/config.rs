@@ -155,7 +155,7 @@ pub struct Loaded {
     pub source: Source,
 }
 
-fn config_dir() -> Option<PathBuf> {
+pub(crate) fn config_dir() -> Option<PathBuf> {
     Some(home_dir()?.join(".gcli"))
 }
 

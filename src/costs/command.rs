@@ -15,7 +15,8 @@ use super::report::{self, View, change, money};
 use super::spikes::{self, Rule, Spike};
 use super::{Kind, Snapshot};
 use crate::cli::{confirm, current_env, gcp_for, interactive, paint, print_json};
-use crate::config::Config;
+use crate::config::{Config, CostDefaults};
+use crate::findings::Finding;
 use crate::gcp::GcpError;
 use crate::tui::chart::sparkline;
 use crate::util::{ellipsize, fmt_ago, fmt_utc, now_secs, program};
@@ -307,6 +308,31 @@ fn print_spikes(found: &[Spike], currency: &str) {
 
 fn rule_json(rule: &Rule) -> Value {
     json!({ "spikeRatio": rule.ratio, "spikeMinUsd": rule.min_usd, "newAppMinUsd": rule.new_min_usd, "medianDays": spikes::WINDOW })
+}
+
+/// The last complete day's spikes as findings, for `gcli status`. `read`: the config, to read the
+/// billing export again when what was kept is old; without it only what was kept counts.
+pub fn spike_findings(env: &str, costs: &CostDefaults, read: Option<&Config>, now: f64) -> Result<Vec<Finding>> {
+    let rule = Rule::of(costs);
+    let obtained = |kind| match read {
+        Some(config) => obtain(config, env, kind, false, now),
+        None => super::load(env, kind)
+            .ok_or_else(|| anyhow!("no cost data kept: run `{} costs {env} --refresh`", program())),
+    };
+    let current = obtained(Kind::Current)?;
+    if current.stale(now, costs.auto_refresh_hours) {
+        bail!("the costs were read {}: run `{} costs {env} --refresh`", fmt_ago(current.read_at), program());
+    }
+    let last = current.last_complete_day().ok_or_else(|| anyhow!("no complete day was read"))?;
+    let need = Range::new(spikes::history(last).from, last);
+    let s = if current.days.is_some_and(|d| d.covers(need)) { current } else { obtained(Kind::Days(need))? };
+    let found = report::spikes(&s, last, &rule).map_err(|e| anyhow!(e))?;
+    Ok(found
+        .iter()
+        .map(|x| {
+            Finding::bad(x.name.clone(), format!("{} on {last} (UTC): {}", money(x.cost, &s.currency), x.reason()))
+        })
+        .collect())
 }
 
 // ---- text ------------------------------------------------------------------------------------

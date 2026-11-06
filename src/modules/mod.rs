@@ -11,11 +11,13 @@ mod crons;
 mod db;
 mod logs;
 mod platform;
+mod status;
 
 use crate::tui::module::Module;
 
 pub fn all() -> Vec<Box<dyn Module>> {
     vec![
+        Box::new(status::Status::new()),
         Box::new(apps::Apps::new()),
         Box::new(costs::Costs::new()),
         Box::new(builds::Builds::new()),

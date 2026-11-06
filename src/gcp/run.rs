@@ -453,13 +453,33 @@ const PAGE: &[(&str, &str)] = &[("pageSize", "100")];
 
 /// Lists the services a page at a time, for a list that fills as it loads; `each` returns
 /// false to stop.
-pub fn list_services(gcp: &Gcp, each: impl FnMut(Vec<Service>) -> bool) -> Result<()> {
+pub fn list_services(gcp: &Gcp, mut each: impl FnMut(Vec<Service>) -> bool) -> Result<()> {
+    if gcp.region.is_empty() {
+        each(across_regions(gcp)?);
+        return Ok(());
+    }
     gcp.pages(&services_url(gcp), PAGE, "services", Opts::default(), each)
+}
+
+/// The services of every region. `locations/-` cuts its answer at the page size and gives no
+/// token, so it only says which regions to read.
+fn across_regions(gcp: &Gcp) -> Result<Vec<Service>> {
+    let every = every_region(gcp)?;
+    let regions: std::collections::BTreeSet<&str> = every.services.iter().map(Service::region).collect();
+    let mut all = Vec::new();
+    for region in regions {
+        all.extend(in_region(gcp, region)?);
+    }
+    Ok(all)
 }
 
 /// Every service, sorted by id.
 pub fn all_services(gcp: &Gcp) -> Result<Vec<Service>> {
-    let mut all: Vec<Service> = gcp.list(&services_url(gcp), PAGE, "services", Opts::default())?;
+    let mut all: Vec<Service> = if gcp.region.is_empty() {
+        across_regions(gcp)?
+    } else {
+        gcp.list(&services_url(gcp), PAGE, "services", Opts::default())?
+    };
     all.sort_by(|a, b| a.id().cmp(b.id()));
     Ok(all)
 }
@@ -682,10 +702,23 @@ pub(crate) mod tests {
 
     #[test]
     fn no_region_lists_every_region() {
-        let server = MockServer::start(vec![Reply::json(200, "{}")]);
+        // The wildcard is cut at a page with no token: it only says which regions to read.
+        let server = MockServer::start(vec![
+            Reply::json(
+                200,
+                r#"{"services":[{"name":"projects/p/locations/asia1/services/a"},{"name":"projects/p/locations/eu1/services/b"}]}"#,
+            ),
+            Reply::json(200, r#"{"services":[{"name":"projects/p/locations/asia1/services/a"}]}"#),
+            Reply::json(200, r#"{"services":[{"name":"projects/p/locations/eu1/services/b"}],"nextPageToken":"more"}"#),
+            Reply::json(200, r#"{"services":[{"name":"projects/p/locations/eu1/services/c"}]}"#),
+        ]);
         let gcp = Gcp::with("p", "", crate::gcp::auth::tests::fixed("t"), Some(server.url()));
-        assert!(all_services(&gcp).unwrap().is_empty());
-        assert_eq!(server.requests()[0].path, "/run/v2/projects/p/locations/-/services?pageSize=100");
+        let all = all_services(&gcp).unwrap();
+        assert_eq!(all.iter().map(Service::id).collect::<Vec<_>>(), ["a", "b", "c"]);
+        let paths: Vec<String> = server.requests().iter().map(|r| r.path.clone()).collect();
+        assert_eq!(paths[0], "/run/v2/projects/p/locations/-/services");
+        assert!(paths[1].starts_with("/run/v2/projects/p/locations/asia1/services?"), "{paths:?}");
+        assert!(paths[2].starts_with("/run/v2/projects/p/locations/eu1/services?"), "{paths:?}");
     }
 
     /// A service with a bit of everything: a pinned revision name, labels, a service-level
@@ -861,10 +894,8 @@ pub(crate) mod tests {
 
     #[test]
     fn finds_a_service_in_any_region() {
-        let server = MockServer::start(vec![Reply::json(
-            200,
-            r#"{"services":[{"name":"projects/p/locations/europe-west1/services/shop"}]}"#,
-        )]);
+        let found = r#"{"services":[{"name":"projects/p/locations/europe-west1/services/shop"}]}"#;
+        let server = MockServer::start(vec![Reply::json(200, found), Reply::json(200, found)]);
         let gcp = Gcp::with("p", "", crate::gcp::auth::tests::fixed("t"), Some(server.url()));
         assert_eq!(find_service(&gcp, "shop").unwrap().region(), "europe-west1");
         server.push(Reply::json(200, "{}"));

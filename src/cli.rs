@@ -31,6 +31,8 @@ pub struct Cli {
 pub enum Command {
     /// Open the interactive UI (the default)
     Ui { env: Option<String> },
+    /// One look at everything: what every area's check finds
+    Status(crate::status::cmd::Args),
     /// Set the current environment, used when a command names none
     #[command(alias = "switch")]
     Use { env: Option<String> },
@@ -273,6 +275,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Cron(args) => crate::crons::cmd::one(config, args),
         Command::Costs(args) => crate::costs::command::run(config, args),
         Command::Db(args) => crate::db::cmd::run(config, args),
+        Command::Status(args) => crate::status::cmd::run(config, args),
         Command::Logs(args) => crate::logs::cmd::run(config, args),
         Command::Platform(args) => crate::infra::cmd::run(config, args),
         Command::Mcp(args) => crate::mcp::serve(&loaded, args),

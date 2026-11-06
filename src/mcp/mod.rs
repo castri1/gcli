@@ -372,6 +372,7 @@ pub(super) mod tests {
         assert_eq!(
             tools.iter().map(|t| t["name"].as_str().unwrap()).collect::<Vec<_>>(),
             [
+                "status",
                 "list_apps",
                 "app_detail",
                 "costs_summary",

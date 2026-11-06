@@ -12,6 +12,7 @@ mod logs;
 mod mcp;
 mod modules;
 mod platform;
+mod status;
 mod tui;
 mod update;
 mod util;

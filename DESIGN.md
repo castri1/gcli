@@ -159,9 +159,6 @@ on its own: when the cost data is missing or old it asks the person to run `gcli
 - **Savings**: the checks we ran by hand — held connections at the timeout, crons slower than
   their schedule, always-on CPU or min instances on idle apps, Artifact Registry storage without
   a cleanup policy, orphan secrets and old versions, orphan load balancer backends and NEGs.
-- **Cloud SQL**: connections against `max_connections`, top queries, storage.
-- **Exposure**: which apps are reachable without IAP (ingress, `run.app`, public paths).
-- **Scheduler**: cron jobs, last run, failures, duration against the timeout.
 - **Cloud-side daily check**: the same `--check` running in a small scheduled job that posts to a
   chat channel, for when the laptop is closed.
 
@@ -196,3 +193,5 @@ not: everything under `aws/`, `savings/`, the AWS modules and commands, pipeline
 - **M2 — Apps**: list, detail, secrets, restart.
 - **M3 — Builds and Logs.**
 - **M4 — Release v0.1.0**: GitHub repo `castri1/gcli`, release workflow, npm `@castri1/gcli`.
+- **M5 — Monitoring**: Database, Crons, Platform, and Status over all of them (`src/findings.rs` is what
+  they share).

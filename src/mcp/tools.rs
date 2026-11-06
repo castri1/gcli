@@ -25,6 +25,7 @@ pub struct Output {
 
 /// (name, title, reads Google Cloud, how to narrow a large answer)
 const TOOLS: &[(&str, &str, bool, &str)] = &[
+    ("status", "One look at an environment", true, "ask the area's own tool for the rest"),
     ("list_apps", "Apps of an environment", true, "pass `search` or `held` to list fewer apps"),
     ("app_detail", "One app in depth", true, "the rest is in the Cloud console"),
     ("costs_summary", "Costs of an environment", false, "ask for `cost_spikes` instead"),
@@ -69,6 +70,7 @@ pub fn list(s: &Server) -> Vec<Value> {
 pub fn call(s: &Server, name: &str, args: &Value) -> Output {
     let narrow = TOOLS.iter().find(|t| t.0 == name).map_or("", |t| t.3);
     let result = check_args(&schema(s, name), args, "").and_then(|()| match name {
+        "status" => status(s, args),
         "list_apps" => list_apps(s, args),
         "app_detail" => app_detail(s, args),
         "costs_summary" => costs_summary(s, args),
@@ -143,6 +145,7 @@ fn object(required: &[&str], properties: Value) -> Value {
 
 fn schema(s: &Server, name: &str) -> Value {
     match name {
+        "status" => object(&["env"], json!({ "env": env_prop(s) })),
         "list_apps" => object(
             &["env"],
             json!({
@@ -226,6 +229,9 @@ fn schema(s: &Server, name: &str) -> Value {
 
 fn description(name: &str) -> &'static str {
     match name {
+        "status" => {
+            "One look at an environment: what every area's check finds, by area (costs, builds, crons, database, platform, apps), with a level (`bad` needs attention, `warn` is worth a look), what could not be read and the command that says more. Start here for how things are. It reads only: costs come from what `gcli costs` kept, and BigQuery is never queried."
+        }
         "list_apps" => {
             "The environment's apps (Cloud Run services) with their last 24 hours: requests, 4xx and 5xx shares, latency percentiles, billed instance hours, and `held` (p99 latency at 90% or more of the request timeout: requests kept open, such as SSE streams or slow crons, that keep instances billed). Also the latest ready revision and when it became ready, traffic split, min and max instances, CPU allocation (request or always-on), timeout, URL, and cost when `gcli costs` has read the bill."
         }
@@ -499,6 +505,16 @@ fn cron_failures(s: &Server, args: &Value) -> Result<String, String> {
         answer["negativeCodeMeans"] = json!(crate::crons::NEGATIVE_CODE_EXPLAINED);
     }
     cloud_data(answer)
+}
+
+fn status(s: &Server, args: &Value) -> Result<String, String> {
+    let (name, env) = s.env(args)?;
+    let gcp = s.gcp(name, env);
+    let read = crate::status::read(&gcp, name, env, &s.config.defaults.costs, None, now_secs());
+    if read.login_required {
+        return Err(gcp_error(name, &crate::gcp::GcpError::LoginRequired { detail: "sign in again".to_string() }));
+    }
+    cloud_data(read.json(name, &env.project))
 }
 
 fn platform_health(s: &Server, args: &Value) -> Result<String, String> {

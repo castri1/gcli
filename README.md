@@ -9,12 +9,15 @@ Its first job: knowing what each app costs and why, catching a cost spike the da
 starts, and seeing an app's health, deploys, logs and secrets in one place. See
 [DESIGN.md](DESIGN.md) for where it is going.
 
-**Status: M1, M2 and M3.** The shell (header, `:` palette, environment switch, toasts, help,
-sign-in), the Google Cloud client (Application Default Credentials with a gcloud fallback, retries,
-page tokens), **Apps** (health from Cloud Monitoring, held requests, revisions, secrets and their
-versions, restart, min instances), **Costs** (the billing export: month to date, budgets, services
-and SKUs, apps, spikes), **Builds** (per app, step timeline, failed logs, which apps' last deploy
-failed) and **Logs** (what an app wrote: search, follow, the distinct errors).
+**Status.** The shell (header, `:` palette, environment switch, toasts, help, sign-in), the Google
+Cloud client (Application Default Credentials with a gcloud fallback, retries, page tokens), and
+**Status** (one look at everything), **Apps** (health from Cloud Monitoring, held requests, revisions,
+secrets and their versions, restart, min instances), **Costs** (the billing export: month to date,
+budgets, services and SKUs, apps, spikes), **Builds** (per app, step timeline, failed logs, which apps'
+last deploy failed), **Crons** (which Cloud Scheduler jobs fail, since when and why), **Logs** (what an
+app wrote: search, follow, the distinct errors), **Database** (Cloud SQL from the outside: connections
+against the limit, disk, backups) and **Platform** (what the apps share: load balancer limits, orphans,
+who is exposed, certificates, images).
 
 ```
  ◆ gcli   1 Apps                                                    ● prod acme-prod-123456 · us-east1
@@ -56,6 +59,7 @@ You also need the [gcloud CLI](https://cloud.google.com/sdk/docs/install), to si
 gcli login                 # gcloud auth login --update-adc (a browser opens)
 gcli                       # the UI, in the current environment
 gcli prod                  # the UI, in that environment
+gcli status [ENV] [--check] [--notify] [--all] [--json]   # one look at everything; exit 1: something needs attention
 gcli apps [ENV] [--sort cost|requests|errors|name] [--json]   # apps and their last 24 h
 gcli apps [ENV] --held     # only apps holding requests at their timeout (exit 1 if any)
 gcli app APP [ENV] [--json | --report]   # one app: health, revisions, secrets (never values)
@@ -87,6 +91,7 @@ gcli mcp [--env NAME]      # MCP server on stdio: claude mcp add gcli -- gcli mc
 | Where | Keys |
 |---|---|
 | Everywhere | `:` / `Ctrl+K` go to a module or an environment · `Tab` / `1`-`9` switch module · `e` environment · `L` sign in (suspends the UI and runs gcloud) · `?` help · `q` quit |
+| Status | `↑↓` area · `Enter` open it · `r` read again |
 | Apps | `↑↓` move · `Enter` open · `/` search · `s` sort · `l` its logs · `R` restart · `m` min instances · `y` copy the URL · `o` open in the Cloud console · `r` reload |
 | An app | `←→` Health / Revisions / Secrets · `w` 24 h / 6 h · `l` its logs · `c` copy a report for an AI agent · `b` its builds · `R` · `m` · `r` refresh · `Esc` back |
 | Builds | `↑↓` move · `Enter` open · `/` search · `f` failed only · `a` this app only · `y` copy the id · `o` open in the Cloud console · `r` reload |
@@ -98,20 +103,34 @@ gcli mcp [--env NAME]      # MCP server on stdio: claude mcp add gcli -- gcli mc
 | Database | `↑↓` `PgUp` `PgDn` `Home` `End` scroll · `←→` another instance, when there are several · `y` copy the connection name · `o` open in the Cloud console · `r` read again |
 | Platform | `←→` Limits / Orphans / Exposure / Certificates / Images · `↑↓` move · `/` search · `f` what needs a look · `y` copy the name · `o` open in the Cloud console · `r` reload |
 
-### A daily cost check
+### Status
 
-`gcli costs ENV --check --notify` raises a desktop notification when something spiked and when it
-could not tell (signed out, say); a quiet day stays quiet. To run it every morning, schedule it
-with cron on Linux, Task Scheduler on Windows, or a launchd agent on macOS, which also runs a job
-missed while the Mac slept. Save this as `~/Library/LaunchAgents/com.gcli.costs-check.plist`:
+`gcli status` asks every area what its check finds, at the same time, and shows them together: costs
+(spikes), builds (last deploy failed), crons, database, platform, and apps (requests held until the
+timeout; 5% or more of at least 50 requests answered 5xx in the last 24 h, 25% is `bad`). Each area
+judges its own findings, and has its own `--check` that says more. `bad` needs attention; `warn` is
+worth a look and does not change the exit code.
+
+`--check` exits 1 when something needs attention, 2 when nothing does but something could not be read
+(signed out, an API off), and 0 otherwise. It reads the billing export only when what was kept is old
+and it costs under `defaults.costs.autoRefreshMaxUsd`. The screen in the UI and the `status` MCP tool
+use only what was kept, and never start a BigQuery read.
+
+### A daily check
+
+`gcli status ENV --check --notify` raises a desktop notification for what needs attention and was not
+told before, and for an area it could not read. What it told is kept in `~/.gcli/status/<env>.json`:
+what stays broken does not notify again, and what is fixed and breaks again does. To run it every
+morning, schedule it with cron on Linux, Task Scheduler on Windows, or a launchd agent on macOS, which
+also runs a job missed while the Mac slept. Save this as `~/Library/LaunchAgents/com.gcli.check.plist`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>Label</key><string>com.gcli.costs-check</string>
+  <key>Label</key><string>com.gcli.check</string>
   <key>ProgramArguments</key><array>
-    <string>/opt/homebrew/bin/gcli</string><string>costs</string><string>ENV</string>
+    <string>/opt/homebrew/bin/gcli</string><string>status</string><string>ENV</string>
     <string>--check</string><string>--notify</string>
   </array>
   <key>EnvironmentVariables</key><dict>
@@ -121,9 +140,9 @@ missed while the Mac slept. Save this as `~/Library/LaunchAgents/com.gcli.costs-
 </dict></plist>
 ```
 
-and load it with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.gcli.costs-check.plist`.
-Costs are read by UTC day and the export runs up to 12 hours behind, so run it once that day is
-complete.
+and load it with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.gcli.check.plist`. Costs
+are read by UTC day and the export runs up to 12 hours behind, so run it once that day is complete.
+`gcli costs ENV --check --notify` does the same for cost spikes alone, and notifies on every spike.
 
 ### Apps
 

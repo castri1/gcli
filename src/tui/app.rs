@@ -187,7 +187,10 @@ impl App {
             && let Some(i) = self.modules.iter().position(|m| m.title() == title)
         {
             self.select_module(i);
-            self.with_module(i, |m, ctx| m.open(&target, ctx));
+            // No target: only go there.
+            if !target.is_empty() {
+                self.with_module(i, |m, ctx| m.open(&target, ctx));
+            }
         }
     }
 
