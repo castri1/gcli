@@ -14,9 +14,11 @@
 pub mod auth;
 pub mod bigquery;
 pub mod budgets;
+pub mod build;
 pub mod error;
 pub mod gcloud;
 pub mod http;
+pub mod logging;
 #[cfg(test)]
 pub mod mock;
 pub mod monitoring;

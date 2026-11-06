@@ -71,7 +71,8 @@ impl LogView {
         self.top = if delta > 0 && next + self.page >= self.lines.len() { None } else { Some(next) };
     }
 
-    fn jump_to(&mut self, line: usize) {
+    /// Shows `line`, with a little of what comes before it.
+    pub fn jump_to(&mut self, line: usize) {
         self.top = Some(line.saturating_sub(3));
     }
 

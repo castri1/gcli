@@ -19,7 +19,7 @@ pub fn md_code(text: &str) -> String {
 }
 
 /// A code span inside a table cell, where `|` would end the cell even inside the span.
-fn md_cell(text: &str) -> String {
+pub fn md_cell(text: &str) -> String {
     md_code(text).replace('|', "\\|")
 }
 
@@ -53,6 +53,20 @@ pub fn markdown(env: &str, project: &str, detail: &Detail, now: f64) -> String {
         let latest = crate::gcp::run::last_segment(&s.latest_created_revision);
         let _ = writeln!(md, "- **Latest revision not ready:** {} {}", md_code(latest), failing.join("; "));
         todo.push(format!("The newest revision {} is not serving: read its conditions and logs.", md_code(latest)));
+    }
+    match &detail.last_deploy {
+        Ok(Some(f)) => {
+            let _ = writeln!(md, "- **Deploy:** {} (build {})", md_code(&f.text()), md_code(&f.build.id));
+            todo.push(format!(
+                "Its last build failed and none succeeded since: `{} build {} {env} --report` says why.",
+                program(),
+                f.build.id
+            ));
+        }
+        Ok(None) => {}
+        Err(e) => {
+            let _ = writeln!(md, "- **Deploy:** could not read the builds: {}", md_code(&e.short()));
+        }
     }
     let manual = s.manual_instances().map(|n| format!("manual {n} · ")).unwrap_or_default();
     let _ = writeln!(
@@ -305,11 +319,26 @@ mod tests {
                 destroy_time: String::new(),
             }]),
         };
-        let detail = Detail { service, revisions: Ok(vec![revision]), secrets: Ok(vec![secret]), charts: Ok(charts) };
+        let failed = crate::builds::Failing {
+            app: "stream".into(),
+            build: crate::builds::tests::failed(),
+            retrying: false,
+            serving: "stream-00007-a".into(),
+            serving_since: Some(t("2026-11-01T00:00:00Z")),
+        };
+        let detail = Detail {
+            service,
+            revisions: Ok(vec![revision]),
+            secrets: Ok(vec![secret]),
+            charts: Ok(charts),
+            last_deploy: Ok(Some(failed)),
+        };
         let md = markdown("prod", "p", &detail, now);
         for expected in [
             "## App report: stream (prod)",
             "- **Serving:** `stream-00007-a` since 2026-11-01 00:00 UTC",
+            "- **Deploy:** `last deploy failed",
+            "build 1a2b3c4d-1111-2222-3333-444455556666 prod --report` says why.",
             "| 25 | 20 | 0 | 0 | 5 |",
             "**Held requests: yes.**",
             "**5xx:** 5 (20.00% of requests)",

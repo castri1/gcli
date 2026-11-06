@@ -77,10 +77,11 @@ An **app** is the unit gcli thinks in. With `apps: whiteghost`:
 - its secrets are `<slug>-prod-*` in Secret Manager;
 - its load balancer pieces are `<slug>-neg`, `<slug>-backend`, and optionally
   `<slug>-public-neg` / `<slug>-public-backend`;
-- its builds are the Cloud Build builds whose substitutions or tags name the service.
+- its builds are the Cloud Build builds whose `_SERVICE` substitution names the service.
 
-With `apps: run` (the default) an app is just a Cloud Run service. Other conventions can be
-added later without touching the modules.
+With `apps: run` (the default) an app is just a Cloud Run service, and its builds name it in
+`_SERVICE_NAME` (Cloud Run's continuous deployment) or `_SERVICE`. Other conventions can be added
+later without touching the modules.
 
 ## Modules (v1)
 
@@ -135,7 +136,10 @@ An app's detail:
 ### Builds
 
 Cloud Build builds per app: status, trigger, commit, duration, step timeline. A failed build
-opens its log at the first error; `c` copies a Markdown report for an AI agent.
+opens its log at the first error; `c` copies a Markdown report for an AI agent. A deploy command
+can claim success after a failed build, so the module shows which apps' last deploy failed (latest
+finished build failed, no later success) and what they run instead; `gcli builds --check` exits 1
+on them, and an app's detail says so.
 
 ### Logs
 

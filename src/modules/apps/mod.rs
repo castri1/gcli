@@ -19,6 +19,7 @@ use crate::apps::costs::{self, CostFile};
 use crate::apps::health::{self, Charts, Health, Range};
 use crate::apps::secrets::{self, Secret};
 use crate::apps::{Detail, REVISIONS, Row, Sort, cmd, report};
+use crate::builds::{self, Failing};
 use crate::config::AppsConvention;
 use crate::gcp::run::{self, Revision, Service};
 use crate::gcp::{self, GcpError};
@@ -55,6 +56,10 @@ enum Msg {
         action: Action,
         result: gcp::Result<String>,
     },
+    Deploy {
+        app: String,
+        result: Box<gcp::Result<Option<Failing>>>,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -86,6 +91,8 @@ struct Open {
     secrets: Option<gcp::Result<Vec<Secret>>>,
     charts: HashMap<Range, gcp::Result<Charts>>,
     charts_loading: HashSet<Range>,
+    /// Its latest build, when it failed and no later one succeeded.
+    deploy: Option<gcp::Result<Option<Failing>>>,
 }
 
 impl Open {
@@ -99,11 +106,12 @@ impl Open {
             secrets: None,
             charts: HashMap::new(),
             charts_loading: HashSet::new(),
+            deploy: None,
         }
     }
 
     fn loading(&self) -> bool {
-        self.revisions.is_none() || self.secrets.is_none() || !self.charts_loading.is_empty()
+        self.revisions.is_none() || self.secrets.is_none() || self.deploy.is_none() || !self.charts_loading.is_empty()
     }
 }
 
@@ -268,12 +276,18 @@ impl Apps {
         let Some(open) = &mut self.open else { return };
         open.revisions = None;
         open.secrets = None;
+        open.deploy = None;
         open.charts.clear();
         let (app, name) = (service.id().to_string(), service.name.clone());
         let gcp = ctx.env().gcp.clone();
         ctx.spawn(move || Msg::Revisions { result: run::recent_revisions(&gcp, &name, REVISIONS), app });
         let (gcp, convention, svc) = (ctx.env().gcp.clone(), self.convention, service.clone());
         ctx.spawn(move || Msg::Secrets { app: svc.id().to_string(), result: secrets::load(&gcp, convention, &svc) });
+        let (gcp, svc) = (ctx.env().gcp.clone(), service.clone());
+        ctx.spawn(move || Msg::Deploy {
+            app: svc.id().to_string(),
+            result: Box::new(builds::last_deploy(&gcp, convention, &svc)),
+        });
         self.fetch_charts(ctx);
     }
 
@@ -308,6 +322,7 @@ impl Apps {
             revisions: open.revisions.clone()?,
             secrets: open.secrets.clone()?,
             charts: charts.clone(),
+            last_deploy: open.deploy.clone()?,
         })
     }
 
@@ -601,6 +616,11 @@ impl Module for Apps {
                     copy(ctx, &uri, "URL copied");
                 }
             }
+            KeyCode::Char('b') => {
+                if let Some(id) = self.current().map(|s| s.id().to_string()) {
+                    ctx.jump("Builds", id);
+                }
+            }
             KeyCode::Char('o') => {
                 if let Some(url) = self.current().map(|s| s.console_url(&self.project))
                     && !crate::platform::open_url(&url)
@@ -691,6 +711,11 @@ impl Module for Apps {
                 }
             }
             Msg::Changed { app, action, result } => self.on_changed(app, action, result, ctx),
+            Msg::Deploy { app, result } => {
+                if let Some(open) = self.open.as_mut().filter(|o| o.id == app) {
+                    open.deploy = Some(*result);
+                }
+            }
         }
     }
 
@@ -722,6 +747,7 @@ impl Module for Apps {
                 ("R", "restart"),
                 ("m", "min instances"),
                 ("c", "copy for AI"),
+                ("b", "builds"),
                 ("y", "copy URL"),
                 ("o", "console"),
                 ("r", "refresh"),
@@ -735,6 +761,7 @@ impl Module for Apps {
             ("s", "sort"),
             ("R", "restart"),
             ("m", "min instances"),
+            ("b", "builds"),
             ("y", "copy URL"),
             ("o", "console"),
             ("r", "reload"),

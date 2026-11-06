@@ -12,48 +12,12 @@ use crate::apps::health::{Charts, HELD_EXPLAINED, HELD_SHARE};
 use crate::apps::report::versions_summary;
 use crate::apps::{Tone, cells, columns, secrets};
 use crate::gcp::run::{self, Service};
-use crate::modules::common::{LoadState, filter_bar};
+use crate::modules::common::{LoadState, filter_bar, fit, spinner_line, tone_style as style};
 use crate::tui::chart::{Agg, Chart, fmt_count, fmt_ms};
 use crate::tui::module::View;
 use crate::tui::theme;
 use crate::tui::widgets;
 use crate::util::{ellipsize, fmt_ago, fmt_duration, fmt_utc};
-
-fn style(tone: Tone) -> Style {
-    match tone {
-        Tone::Plain => Style::new(),
-        Tone::Muted => theme::muted(),
-        Tone::Warn => Style::new().fg(theme::WARN),
-        Tone::Bad => Style::new().fg(theme::ERR),
-    }
-}
-
-fn spinner_line(tick: usize, text: &str) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(theme::spinner(tick), theme::accent()),
-        Span::styled(format!(" {text}"), theme::muted()),
-    ])
-}
-
-/// Which columns fit in `width`: those that give way first (highest `drop`) go until the rest
-/// fit; the last column (notes) takes what is left.
-fn fit(widths: &[usize], drops: &[u8], width: usize) -> Vec<bool> {
-    let mut keep = vec![true; widths.len()];
-    let used = |keep: &[bool]| -> usize {
-        let n = keep.iter().filter(|k| **k).count();
-        // The notes need a little room to say anything.
-        widths.iter().zip(keep).take(widths.len() - 1).filter(|(_, k)| **k).map(|(w, _)| *w).sum::<usize>()
-            + 2 * n.saturating_sub(1)
-            + 6
-    };
-    while used(&keep) > width {
-        let Some(i) = (0..widths.len()).filter(|&i| keep[i] && drops[i] > 0).max_by_key(|&i| (drops[i], i)) else {
-            break;
-        };
-        keep[i] = false;
-    }
-    keep
-}
 
 impl Apps {
     pub(super) fn render_list(&mut self, f: &mut Frame, area: Rect, view: &View) {
@@ -242,6 +206,17 @@ impl Apps {
     fn health_lines(&self, open: &Open, s: &Service, width: usize, view: &View) -> Vec<Line<'static>> {
         let kw = 11;
         let mut lines = config_lines(s, kw);
+        match &open.deploy {
+            Some(Ok(Some(f))) => {
+                let text = format!("{} · b shows its builds", f.text());
+                lines.push(widgets::kv("Deploy", Span::styled(text, Style::new().fg(theme::ERR)), kw));
+            }
+            Some(Err(e)) => {
+                let text = format!("could not read the builds: {}", e.short());
+                lines.push(widgets::kv("Deploy", Span::styled(text, Style::new().fg(theme::WARN)), kw));
+            }
+            _ => {}
+        }
         if let Some(c) = self.row(s).cost {
             let spike = if c.spike { " · spike" } else { "" };
             lines.push(widgets::kv(
@@ -573,20 +548,4 @@ fn revision_lines(open: &Open, s: &Service, view: &View) -> Vec<Line<'static>> {
         lines.push(Line::raw(""));
     }
     lines
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn columns_give_way_in_order() {
-        // APP, REV, REQ, NOTES; REV gives way first.
-        let widths = [10, 9, 7, 20];
-        let drops = [0, 6, 0, 0];
-        assert_eq!(fit(&widths, &drops, 80), [true, true, true, true]);
-        assert_eq!(fit(&widths, &drops, 30), [true, false, true, true]);
-        // Nothing else may go: kept, and the name gives way when drawn.
-        assert_eq!(fit(&widths, &drops, 10), [true, false, true, true]);
-    }
 }

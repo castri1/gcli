@@ -13,7 +13,8 @@ starts, and seeing an app's health, deploys, logs and secrets in one place. See
 the Google Cloud client (Application Default Credentials with a gcloud fallback, retries, page
 tokens), **Apps** (health from Cloud Monitoring, held requests, revisions, secrets and their
 versions, restart, min instances) and **Costs** (the billing export: month to date, budgets,
-services and SKUs, apps, spikes). Builds and Logs come next (M3).
+services and SKUs, apps, spikes). From M3, **Builds** (per app, step timeline, failed logs, which
+apps' last deploy failed); Logs comes next.
 
 ```
  ◆ gcli   1 Apps                                                    ● prod acme-prod-123456 · us-east1
@@ -60,6 +61,9 @@ gcli apps [ENV] --held     # only apps holding requests at their timeout (exit 1
 gcli app APP [ENV] [--json | --report]   # one app: health, revisions, secrets (never values)
 gcli apps restart APP [ENV] [--yes]      # new revision, same config: re-reads `latest` secrets
 gcli apps min APP N [ENV] [--yes]        # service-level min instances (no new revision)
+gcli builds [APP] [ENV] [--failed] [--limit N] [--json]   # recent builds, and whose last deploy failed
+gcli builds [ENV] --check [--json]       # exit 1: an app's last deploy failed; 2: could not read
+gcli build ID [ENV] [--log | --report] [--json]   # steps, the failing step, the log around the first error
 gcli costs [ENV] [--by service|app|sku] [--month YYYY-MM] [--days N] [--refresh] [--json]
 gcli costs [ENV] --check [--date YYYY-MM-DD] [--notify]   # exit 1: a spike; 2: could not read fresh costs
 gcli envs [--json]         # the environments, and which one is current
@@ -73,7 +77,9 @@ gcli mcp [--env NAME]      # MCP server on stdio: claude mcp add gcli -- gcli mc
 |---|---|
 | Everywhere | `:` / `Ctrl+K` go to a module or an environment · `Tab` / `1`-`9` switch module · `e` environment · `L` sign in (suspends the UI and runs gcloud) · `?` help · `q` quit |
 | Apps | `↑↓` move · `Enter` open · `/` search · `s` sort · `R` restart · `m` min instances · `y` copy the URL · `o` open in the Cloud console · `r` reload |
-| An app | `←→` Health / Revisions / Secrets · `w` 24 h / 6 h · `c` copy a report for an AI agent · `R` · `m` · `r` refresh · `Esc` back |
+| An app | `←→` Health / Revisions / Secrets · `w` 24 h / 6 h · `c` copy a report for an AI agent · `b` its builds · `R` · `m` · `r` refresh · `Esc` back |
+| Builds | `↑↓` move · `Enter` open · `/` search · `f` failed only · `a` this app only · `y` copy the id · `o` open in the Cloud console · `r` reload |
+| A build | `↑↓` scroll the log · `z` log full screen (`/` search, `e`/`E` errors, `y` copy) · `c` copy a report for an AI agent · `r` refresh · `Esc` back |
 | Costs | `←→` Overview / By service / By app / Spikes · `↑↓` move · `Enter` a service's SKUs · `r` read again |
 
 ### A daily cost check
@@ -130,6 +136,34 @@ commands refuse without `--yes` outside a terminal). `R` / `gcli apps restart` s
 back unchanged but for a `gcli-restart` template label, so Cloud Run makes a new revision with
 the same configuration; `m` / `gcli apps min` sets the service-level minimum, which applies at
 once without a revision (the revision's own minimum still applies when higher).
+
+### Builds
+
+A build belongs to an app when one of its substitutions names the Cloud Run service: `_SERVICE`
+with `apps: whiteghost`; `_SERVICE_NAME` (what Cloud Run's continuous deployment writes), then
+`_SERVICE`, with `apps: run`. Builds are read from the environment's region; an environment without
+one reads Cloud Build's `global` builds, since Cloud Build has no "every region".
+
+**Last deploy failed** marks an app whose latest finished build failed, with no later build that
+succeeded (one that was cancelled or is still running does not count). A deploy command can claim
+success after a failed build, so this reads the builds and not what the command said. The notes say
+what serves instead: *still running* a revision older than the failed build; or *last build failed*
+when a revision came after it (the build failed past its deploy step, or someone deployed another
+way, or restarted the app). A name in a failed build with no Cloud Run service (an app since
+deleted) is not counted. The check reads the newest 3,000 failed builds and asks, for each app with
+one, what came after; `gcli app` and an app's detail in the UI say so too (`b` there shows its builds).
+
+`gcli builds ENV --check` exits 1 when some app's last deploy failed and 2 when it could not read,
+for cron and CI, in the same way as `gcli costs --check`.
+
+A failed build opens its log at the first line of the failing step that says an error (names of
+files and packages like `error-handler.ts`, and warnings, do not count), or at the step's last line
+when none does. Log text comes from Cloud Logging, whose retention (30 days by default) is how far
+back a build's log can be read. Reports and the MCP server hand on the lines around the first error
+and the end of the step, with tokens redacted and marked as data. Substitutions other than the ones
+gcli reads, and steps' arguments and environment, are never shown or asked for.
+
+**MCP.** `list_builds` and `build_failure` read the same, read-only.
 
 ### Costs
 

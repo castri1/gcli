@@ -87,7 +87,6 @@ pub struct View {
     /// Animation counter, +1 every 100 ms.
     pub tick: usize,
     /// Unix seconds.
-    #[allow(dead_code)] // the durations of what runs (builds), from M3
     pub now: f64,
 }
 
@@ -158,7 +157,6 @@ impl Ctx<'_> {
 
     /// Switches to the module titled `module` and asks it to open `target`
     /// (an app → its builds in Builds, for example).
-    #[allow(dead_code)] // for modules that open each other (Apps, Builds, Logs)
     pub fn jump(&mut self, module: &'static str, target: impl Into<String>) {
         self.shared.jump = Some((module, target.into()));
     }

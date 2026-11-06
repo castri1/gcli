@@ -77,6 +77,10 @@ pub enum Command {
         #[arg(long, conflicts_with = "json")]
         report: bool,
     },
+    /// Recent builds per app, and which apps' last deploy failed
+    Builds(crate::builds::cmd::Args),
+    /// One build: its steps and, when it failed, the failing step and the log around the first error
+    Build(crate::builds::cmd::OneArgs),
     /// What the environment's project costs, from the billing export (UTC days), and its spikes
     Costs(crate::costs::command::Args),
     /// Sign in to Google Cloud (runs `gcloud auth login --update-adc`)
@@ -253,6 +257,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::App { app, env, json, report } => {
             crate::apps::cmd::detail(config, &env_or_current(config, env)?, &app, json, report)
         }
+        Command::Builds(args) => crate::builds::cmd::list(config, args),
+        Command::Build(args) => crate::builds::cmd::one(config, args),
         Command::Costs(args) => crate::costs::command::run(config, args),
         Command::Mcp(args) => crate::mcp::serve(&loaded, args),
     }
