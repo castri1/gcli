@@ -62,7 +62,7 @@ pub struct OneArgs {
     json: bool,
 }
 
-fn named_env(config: &Config, env: Option<String>) -> Result<String> {
+pub(crate) fn named_env(config: &Config, env: Option<String>) -> Result<String> {
     match env {
         Some(name) => config.env(&name).map(|_| name),
         None => current_env(config),
@@ -71,7 +71,7 @@ fn named_env(config: &Config, env: Option<String>) -> Result<String> {
 
 /// `[APP] [ENV]`: which app and environment. A single name is the environment when one has that
 /// name: `gcli builds shop prod` tells them apart when an app is named like an environment.
-fn target(config: &Config, first: Option<String>, env: Option<String>) -> Result<(Option<String>, String)> {
+pub(crate) fn target(config: &Config, first: Option<String>, env: Option<String>) -> Result<(Option<String>, String)> {
     match (first, env) {
         (Some(one), None) if config.environments.contains_key(&one) => Ok((None, one)),
         (app, env) => Ok((app, named_env(config, env)?)),

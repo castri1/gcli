@@ -3,7 +3,7 @@ mod builds;
 mod cli;
 mod config;
 mod costs;
-#[allow(dead_code)] // until the first area uses it
+mod crons;
 mod findings;
 mod gcp;
 mod logs;

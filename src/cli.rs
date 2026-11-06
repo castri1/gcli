@@ -81,6 +81,10 @@ pub enum Command {
     Builds(crate::builds::cmd::Args),
     /// One build: its steps and, when it failed, the failing step and the log around the first error
     Build(crate::builds::cmd::OneArgs),
+    /// Cloud Scheduler jobs: which failed, since when and most likely why; read-only
+    Crons(crate::crons::cmd::Args),
+    /// One Cloud Scheduler job: its details and its recent attempts
+    Cron(crate::crons::cmd::OneArgs),
     /// What the environment's project costs, from the billing export (UTC days), and its spikes
     Costs(crate::costs::command::Args),
     /// What an app wrote (or any Cloud Logging filter): list, search, follow, group the errors
@@ -261,6 +265,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::Builds(args) => crate::builds::cmd::list(config, args),
         Command::Build(args) => crate::builds::cmd::one(config, args),
+        Command::Crons(args) => crate::crons::cmd::list(config, args),
+        Command::Cron(args) => crate::crons::cmd::one(config, args),
         Command::Costs(args) => crate::costs::command::run(config, args),
         Command::Logs(args) => crate::logs::cmd::run(config, args),
         Command::Mcp(args) => crate::mcp::serve(&loaded, args),

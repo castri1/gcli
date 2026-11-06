@@ -64,6 +64,9 @@ gcli apps min APP N [ENV] [--yes]        # service-level min instances (no new r
 gcli builds [APP] [ENV] [--failed] [--limit N] [--json]   # recent builds, and whose last deploy failed
 gcli builds [ENV] --check [--json]       # exit 1: an app's last deploy failed; 2: could not read
 gcli build ID [ENV] [--log | --report] [--json]   # steps, the failing step, the log around the first error
+gcli crons [APP] [ENV] [--failed] [--json]   # Cloud Scheduler jobs: last run, result, next run
+gcli crons [ENV] --check [--json]        # exit 1: a job is failing; 2: could not read
+gcli cron JOB [ENV] [--json | --report]  # one job: what is wrong, its attempts of the last 24 h
 gcli logs APP [ENV] [--severity LEVEL | --errors] [--search TEXT] [--since 15m|2h|3d] [--limit N]
                     [--requests] [--filter EXPR] [--follow] [--json]   # what an app wrote
 gcli logs APP [ENV] --errors --group [--since DURATION] [--json]       # the distinct errors, counted
@@ -84,6 +87,8 @@ gcli mcp [--env NAME]      # MCP server on stdio: claude mcp add gcli -- gcli mc
 | An app | `←→` Health / Revisions / Secrets · `w` 24 h / 6 h · `l` its logs · `c` copy a report for an AI agent · `b` its builds · `R` · `m` · `r` refresh · `Esc` back |
 | Builds | `↑↓` move · `Enter` open · `/` search · `f` failed only · `a` this app only · `y` copy the id · `o` open in the Cloud console · `r` reload |
 | A build | `↑↓` scroll the log · `z` log full screen (`/` search, `e`/`E` errors, `y` copy) · `c` copy a report for an AI agent · `r` refresh · `Esc` back |
+| Crons | `↑↓` move · `Enter` open · `/` search · `f` failing only · `a` this app only · `l` its logs · `y` copy the name · `o` open in the Cloud console · `r` reload |
+| A job | `↑↓` scroll the attempts · `l` its logs · `c` copy a report for an AI agent · `y` · `o` · `r` refresh · `Esc` back |
 | Logs | `s` severity · `w` time window · `f` follow on/off · `t` the requests log · `a` another app · `r` read again · `/` search · `n` `N` next, previous · `e` `E` next, previous error · `y` copy every line · `↑↓` `g` `G` move · `Esc` `q` back |
 | Costs | `←→` Overview / By service / By app / Spikes · `↑↓` move · `Enter` a service's SKUs · `r` read again |
 
@@ -169,6 +174,40 @@ and the end of the step, marked as data, with what looks like a credential repla
 gcli reads, and steps' arguments and environment, are never shown or asked for.
 
 **MCP.** `list_builds` and `build_failure` read the same, read-only.
+
+### Crons
+
+The environment's Cloud Scheduler jobs, those in trouble first, read-only: gcli never runs, pauses,
+resumes, changes or deletes a job, and a job's headers and body, which can hold secrets, are not even
+asked for. The URL it shows has no query string.
+
+A job belongs to an app when its URL is one of the Cloud Run service's own. With `apps: whiteghost`,
+also when its host is `<slug>.<domain>` (the load balancer's host for an app) or its name is
+`<slug>-<name>`. A status code is a `google.rpc` code, and no code means the last attempt worked. A
+negative code is not one of those: jobs seen with -1 had no last attempt and nothing in their logs, so
+gcli says *no attempt yet*; after an attempt it says plainly that it cannot tell what the code means.
+
+`gcli crons ENV --check` exits 1 when a job needs attention and 2 when it could not read:
+
+- **Last attempt failed**: its code, its HTTP status, how many attempts failed in a row and for how
+  long, its app, and what most likely explains that answer.
+- **Overdue**: enabled, and its next run is over 15 minutes plus its attempt deadline in the past.
+- **Orphan**: it calls a Cloud Run service of this project and region that does not exist any more.
+
+Two more only warn, and do not change the exit code: **paused** (whatever its last attempt did) and
+**never attempted** more than a day after its last change, which may just be a schedule that has not
+come up yet.
+
+Attempts come from the logs Cloud Scheduler writes (`resource.type="cloud_scheduler_job"`): one read
+for all the jobs failing, usually (Cloud Logging allows about 60 reads a minute per project), and none
+when no job is. They go back 24 hours, so a run of failures with no success in that time is *at
+least* that long. `gcli cron JOB` and a job's detail also look for its last success in what Cloud
+Logging keeps, and say how long each attempt took. A 504 or `DEADLINE_EXCEEDED` compares the attempt
+deadline with the service's request timeout: whichever is shorter is what cuts the request. A 401, 403
+or redirect from a target that is not a `run.app` URL may be an identity-aware proxy turning the job
+away. Log text is data: reports and the MCP server pass it through the same redaction as Builds'.
+
+**MCP.** `list_crons` and `cron_failures` read the same, read-only.
 
 ### Logs
 

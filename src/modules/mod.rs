@@ -7,6 +7,7 @@ mod apps;
 mod builds;
 mod common;
 mod costs;
+mod crons;
 mod logs;
 
 use crate::tui::module::Module;
@@ -17,5 +18,6 @@ pub fn all() -> Vec<Box<dyn Module>> {
         Box::new(costs::Costs::new()),
         Box::new(builds::Builds::new()),
         Box::new(logs::Logs::new()),
+        Box::new(crons::Crons::new()),
     ]
 }
