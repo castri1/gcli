@@ -32,9 +32,16 @@ pub(crate) fn warn(text: &str) {
 /// A table of `cols`: each column as wide as its widest cell (at most 40), the last one as long
 /// as it needs.
 pub(crate) fn print_table(cols: &[Column], table: Vec<Vec<(String, Tone)>>) {
+    print_table_wide(cols, table, 40);
+}
+
+/// [`print_table`] with columns of up to `widest` characters.
+pub(crate) fn print_table_wide(cols: &[Column], table: Vec<Vec<(String, Tone)>>, widest: usize) {
     let last = cols.len() - 1;
     let widths: Vec<usize> = (0..cols.len())
-        .map(|i| table.iter().map(|r| r[i].0.chars().count()).chain([cols[i].head.len()]).max().unwrap_or(0).min(40))
+        .map(|i| {
+            table.iter().map(|r| r[i].0.chars().count()).chain([cols[i].head.len()]).max().unwrap_or(0).min(widest)
+        })
         .collect();
     let line = |items: Vec<(String, Tone)>| {
         let parts: Vec<String> = items

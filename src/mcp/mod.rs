@@ -380,7 +380,9 @@ pub(super) mod tests {
                 "build_failure",
                 "search_logs",
                 "error_summary",
-                "database_health"
+                "database_health",
+                "list_crons",
+                "cron_failures"
             ]
         );
         for t in tools {

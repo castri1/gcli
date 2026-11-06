@@ -35,7 +35,7 @@ const STEP_TAIL: usize = 10;
 
 /// What Cloud Run accepts as a service's name. Whoever can submit a build sets its substitutions
 /// to anything, so any other text names no app and goes no further.
-fn is_service_name(name: &str) -> bool {
+pub(crate) fn is_service_name(name: &str) -> bool {
     name.len() <= 63
         && name.starts_with(|c: char| c.is_ascii_lowercase())
         && !name.ends_with('-')
@@ -184,7 +184,7 @@ impl Deploys {
 }
 
 /// Runs `read` over `items`, a few at a time, keeping their order.
-fn read_all<T: Sync, U: Send>(items: &[T], read: impl Fn(&T) -> Result<U> + Sync) -> Vec<Result<U>> {
+pub(crate) fn read_all<T: Sync, U: Send>(items: &[T], read: impl Fn(&T) -> Result<U> + Sync) -> Vec<Result<U>> {
     let read = &read;
     let mut out = Vec::with_capacity(items.len());
     for batch in items.chunks(READS_AT_ONCE) {

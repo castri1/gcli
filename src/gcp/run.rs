@@ -22,6 +22,8 @@ pub struct Service {
     pub name: String,
     /// `https://{id}-{hash}.{region}.run.app`
     pub uri: String,
+    /// Every URL it answers on.
+    pub urls: Vec<String>,
     /// `projects/…/revisions/{revision}`; empty until a revision is ready.
     pub latest_ready_revision: String,
     /// Differs from the ready one while a revision deploys, or when the last one failed.

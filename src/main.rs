@@ -4,6 +4,7 @@ mod cli;
 mod config;
 mod costs;
 mod db;
+mod crons;
 mod findings;
 mod gcp;
 mod logs;
