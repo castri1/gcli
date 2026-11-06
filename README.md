@@ -9,12 +9,12 @@ Its first job: knowing what each app costs and why, catching a cost spike the da
 starts, and seeing an app's health, deploys, logs and secrets in one place. See
 [DESIGN.md](DESIGN.md) for where it is going.
 
-**Status: M1 + M2.** The shell (header, `:` palette, environment switch, toasts, help, sign-in),
-the Google Cloud client (Application Default Credentials with a gcloud fallback, retries, page
-tokens), **Apps** (health from Cloud Monitoring, held requests, revisions, secrets and their
-versions, restart, min instances) and **Costs** (the billing export: month to date, budgets,
-services and SKUs, apps, spikes). From M3, **Builds** (per app, step timeline, failed logs, which
-apps' last deploy failed); Logs comes next.
+**Status: M1, M2 and M3.** The shell (header, `:` palette, environment switch, toasts, help,
+sign-in), the Google Cloud client (Application Default Credentials with a gcloud fallback, retries,
+page tokens), **Apps** (health from Cloud Monitoring, held requests, revisions, secrets and their
+versions, restart, min instances), **Costs** (the billing export: month to date, budgets, services
+and SKUs, apps, spikes), **Builds** (per app, step timeline, failed logs, which apps' last deploy
+failed) and **Logs** (what an app wrote: search, follow, the distinct errors).
 
 ```
  ◆ gcli   1 Apps                                                    ● prod acme-prod-123456 · us-east1
@@ -64,6 +64,10 @@ gcli apps min APP N [ENV] [--yes]        # service-level min instances (no new r
 gcli builds [APP] [ENV] [--failed] [--limit N] [--json]   # recent builds, and whose last deploy failed
 gcli builds [ENV] --check [--json]       # exit 1: an app's last deploy failed; 2: could not read
 gcli build ID [ENV] [--log | --report] [--json]   # steps, the failing step, the log around the first error
+gcli logs APP [ENV] [--severity LEVEL | --errors] [--search TEXT] [--since 15m|2h|3d] [--limit N]
+                    [--requests] [--filter EXPR] [--follow] [--json]   # what an app wrote
+gcli logs APP [ENV] --errors --group [--since DURATION] [--json]       # the distinct errors, counted
+gcli logs [ENV] --filter EXPR [...]   # anything that isn't an app, by a Cloud Logging filter
 gcli costs [ENV] [--by service|app|sku] [--month YYYY-MM] [--days N] [--refresh] [--json]
 gcli costs [ENV] --check [--date YYYY-MM-DD] [--notify]   # exit 1: a spike; 2: could not read fresh costs
 gcli envs [--json]         # the environments, and which one is current
@@ -76,10 +80,11 @@ gcli mcp [--env NAME]      # MCP server on stdio: claude mcp add gcli -- gcli mc
 | Where | Keys |
 |---|---|
 | Everywhere | `:` / `Ctrl+K` go to a module or an environment · `Tab` / `1`-`9` switch module · `e` environment · `L` sign in (suspends the UI and runs gcloud) · `?` help · `q` quit |
-| Apps | `↑↓` move · `Enter` open · `/` search · `s` sort · `R` restart · `m` min instances · `y` copy the URL · `o` open in the Cloud console · `r` reload |
-| An app | `←→` Health / Revisions / Secrets · `w` 24 h / 6 h · `c` copy a report for an AI agent · `b` its builds · `R` · `m` · `r` refresh · `Esc` back |
+| Apps | `↑↓` move · `Enter` open · `/` search · `s` sort · `l` its logs · `R` restart · `m` min instances · `y` copy the URL · `o` open in the Cloud console · `r` reload |
+| An app | `←→` Health / Revisions / Secrets · `w` 24 h / 6 h · `l` its logs · `c` copy a report for an AI agent · `b` its builds · `R` · `m` · `r` refresh · `Esc` back |
 | Builds | `↑↓` move · `Enter` open · `/` search · `f` failed only · `a` this app only · `y` copy the id · `o` open in the Cloud console · `r` reload |
 | A build | `↑↓` scroll the log · `z` log full screen (`/` search, `e`/`E` errors, `y` copy) · `c` copy a report for an AI agent · `r` refresh · `Esc` back |
+| Logs | `s` severity · `w` time window · `f` follow on/off · `t` the requests log · `a` another app · `r` read again · `/` search · `n` `N` next, previous · `e` `E` next, previous error · `y` copy every line · `↑↓` `g` `G` move · `Esc` `q` back |
 | Costs | `←→` Overview / By service / By app / Spikes · `↑↓` move · `Enter` a service's SKUs · `r` read again |
 
 ### A daily cost check
@@ -164,6 +169,39 @@ and the end of the step, with tokens redacted and marked as data. Substitutions 
 gcli reads, and steps' arguments and environment, are never shown or asked for.
 
 **MCP.** `list_builds` and `build_failure` read the same, read-only.
+
+### Logs
+
+`gcli logs APP` shows what the app wrote in the last hour (stdout, stderr and anything else, not
+the log of requests served; `--requests` shows that one), newest first: time, severity, message.
+It reads Cloud Logging entries of the Cloud Run service in the environment's region.
+
+- **`--severity LEVEL`** is that severity or worse, **`--errors`** is ERROR or worse.
+- **`--search TEXT`** finds text in any field of an entry, in any case, like the Logs Explorer's
+  search box. A word that every entry's labels hold (the app's name, the region, the project) is
+  looked for only in the message and the request's URL.
+- **`--filter EXPR`** takes a whole [Cloud Logging filter](https://cloud.google.com/logging/docs/view/logging-query-language),
+  and-ed with the other options, for anything that isn't an app. `--since` still applies, unless
+  the filter speaks of `timestamp` itself and no `--since` is given.
+- **`--follow`** shows the last entries, then what arrives, oldest first, until Ctrl-C. It asks
+  every 5 seconds (Cloud Logging allows about 60 reads a minute per project), goes 60 seconds back
+  each time for entries that arrive late, and shows none twice. With `--json`, one object per line.
+- **`--errors --group`** lists the distinct errors, most frequent first: each message's first
+  line with its numbers, ids, hex and email addresses replaced by `#`, how many there were and
+  when the last one was. It counts the newest 1000 entries unless `--limit` says otherwise, and
+  says when there were more.
+
+Text output cuts a line at 2000 characters; `--json` cuts nothing. What is said about the read
+goes to stderr, so a pipe gets only the log.
+
+**Logs** in the UI asks for an app (`l` in Apps goes straight to the app's logs), and shows the
+newest 1000 entries in the full-screen viewer, where the mouse selects text. Following shows
+them oldest first and polls only while the module is on screen.
+
+**MCP.** `search_logs` (app, severity, search, since, at most 200 entries, long messages cut) and
+`error_summary` (the patterns and counts, never the messages themselves) are read-only and limited
+by `gcli mcp --env`. Log text is handed over as data, and only what a search needs of each entry:
+no payloads, labels or traces, as logs may hold personal data.
 
 ### Costs
 

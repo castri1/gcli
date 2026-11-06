@@ -430,7 +430,7 @@ fn log_filter(gcp: &Gcp, build: &Build) -> String {
 /// retention (30 days by default), or the build logged only to Cloud Storage.
 pub fn log(gcp: &Gcp, build: &Build) -> Result<Log> {
     // One more than kept, to know whether there was more.
-    let mut entries = logging::entries(gcp, &log_filter(gcp, build), false, LOG_LINES + 1)?;
+    let mut entries = logging::entries(gcp, &log_filter(gcp, build), false, LOG_LINES + 1)?.list;
     let cut = entries.len() > LOG_LINES;
     entries.truncate(LOG_LINES);
     Ok(Log { lines: entries.iter().flat_map(LogLine::of).collect(), cut })

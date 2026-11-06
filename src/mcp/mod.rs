@@ -371,7 +371,16 @@ pub(super) mod tests {
         let tools = replies[1]["result"]["tools"].as_array().unwrap();
         assert_eq!(
             tools.iter().map(|t| t["name"].as_str().unwrap()).collect::<Vec<_>>(),
-            ["list_apps", "app_detail", "costs_summary", "cost_spikes", "list_builds", "build_failure"]
+            [
+                "list_apps",
+                "app_detail",
+                "costs_summary",
+                "cost_spikes",
+                "list_builds",
+                "build_failure",
+                "search_logs",
+                "error_summary"
+            ]
         );
         for t in tools {
             assert_eq!(t["inputSchema"]["type"], "object", "{}", t["name"]);

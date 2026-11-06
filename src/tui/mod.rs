@@ -7,7 +7,6 @@ pub mod canvas;
 pub mod chart;
 #[allow(dead_code)] // actions that ask for values (min instances), from M2
 pub mod form;
-#[allow(dead_code)] // build logs and Cloud Logging (M3)
 pub mod logview;
 pub mod module;
 pub mod picker;
