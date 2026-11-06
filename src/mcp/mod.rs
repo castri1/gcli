@@ -379,7 +379,8 @@ pub(super) mod tests {
                 "list_builds",
                 "build_failure",
                 "search_logs",
-                "error_summary"
+                "error_summary",
+                "database_health"
             ]
         );
         for t in tools {

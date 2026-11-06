@@ -24,6 +24,7 @@ pub mod mock;
 pub mod monitoring;
 pub mod run;
 pub mod secrets;
+pub mod sql;
 
 use std::collections::HashSet;
 use std::sync::Arc;
