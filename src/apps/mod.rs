@@ -335,6 +335,8 @@ pub struct Detail {
     pub revisions: std::result::Result<Vec<Revision>, GcpError>,
     pub secrets: std::result::Result<Vec<secrets::Secret>, GcpError>,
     pub charts: std::result::Result<Charts, GcpError>,
+    /// Its latest build, when it failed and no later one succeeded.
+    pub last_deploy: std::result::Result<Option<crate::builds::Failing>, GcpError>,
 }
 
 /// When the running revision was made: from its own record when read, else from the service.
@@ -346,21 +348,23 @@ pub fn revision_created(service: &Service, revisions: Option<&[Revision]>) -> Op
 }
 
 impl Detail {
-    /// Finds the app, then reads its revisions, secrets and charts at the same time.
+    /// Finds the app, then reads its revisions, secrets, charts and last deploy at the same time.
     pub fn load(gcp: &Gcp, convention: AppsConvention, app: &str, range: Range, now: f64) -> Result<Detail> {
         let service = run::find_service(gcp, app)?;
         let failed = || GcpError::Network("a read failed unexpectedly".into());
-        let (revisions, secrets, charts) = std::thread::scope(|s| {
+        let (revisions, secrets, charts, last_deploy) = std::thread::scope(|s| {
             let revisions = s.spawn(|| run::recent_revisions(gcp, &service.name, REVISIONS));
             let secrets = s.spawn(|| secrets::load(gcp, convention, &service));
             let charts = s.spawn(|| health::charts(gcp, service.id(), range, now));
+            let last_deploy = s.spawn(|| crate::builds::last_deploy(gcp, convention, &service));
             (
                 revisions.join().unwrap_or_else(|_| Err(failed())),
                 secrets.join().unwrap_or_else(|_| Err(failed())),
                 charts.join().unwrap_or_else(|_| Err(failed())),
+                last_deploy.join().unwrap_or_else(|_| Err(failed())),
             )
         });
-        Ok(Detail { service, revisions, secrets, charts })
+        Ok(Detail { service, revisions, secrets, charts, last_deploy })
     }
 
     pub fn revision_created(&self) -> Option<f64> {
@@ -403,6 +407,15 @@ impl Detail {
             .map(|c| json!({ "type": c.kind, "state": c.state, "message": c.message }))
             .collect();
         obj.insert("conditionsNotMet".into(), json!(problems));
+        match &self.last_deploy {
+            Ok(Some(f)) => {
+                obj.insert("lastDeployFailed".into(), f.json());
+            }
+            Ok(None) => {}
+            Err(e) => {
+                obj.insert("lastDeployError".into(), json!(e.short()));
+            }
+        }
         match &self.charts {
             Ok(c) => {
                 let summary = c.summary();
@@ -581,6 +594,7 @@ mod tests {
         server.route("/secrets?", crate::gcp::mock::Reply::json(200, r#"{"secrets":[]}"#));
         server.route("/versions", crate::gcp::mock::Reply::json(200, r#"{"versions":[]}"#));
         server.route("timeSeries", crate::gcp::mock::Reply::json(200, r#"{}"#));
+        server.route("/builds?", crate::gcp::mock::Reply::json(200, r#"{}"#));
         let gcp = Gcp::with("p", "us-east1", crate::gcp::auth::tests::fixed("t"), Some(server.url()));
         let detail = Detail::load(&gcp, AppsConvention::Whiteghost, "shop", Range::Day, 1_793_000_000.0).unwrap();
         assert_eq!(detail.service.id(), "shop");
@@ -592,7 +606,8 @@ mod tests {
         assert_eq!(json["health"]["requests"], 0.0);
         let text = json.to_string();
         assert!(!text.contains("carriage return"), "plain values never leave: {text}");
-        // 1 service + 1 revisions + 1 secret list + 3 versions + 4 metrics.
-        assert_eq!(server.requests().len(), 10);
+        assert!(matches!(detail.last_deploy, Ok(None)));
+        // 1 service + 1 revisions + 1 secret list + 3 versions + 4 metrics + 1 for failed builds.
+        assert_eq!(server.requests().len(), 11);
     }
 }

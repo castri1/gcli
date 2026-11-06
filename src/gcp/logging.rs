@@ -51,6 +51,7 @@ pub struct Resource {
 }
 
 impl Entry {
+    #[allow(dead_code)] // the Logs module (M3)
     pub fn at(&self) -> Option<f64> {
         parse_rfc3339(&self.timestamp)
     }
@@ -78,6 +79,7 @@ impl Entry {
     }
 
     /// `WARNING` or worse.
+    #[allow(dead_code)] // the Logs module (M3)
     pub fn is_problem(&self) -> bool {
         matches!(self.severity.as_str(), "WARNING" | "ERROR" | "CRITICAL" | "ALERT" | "EMERGENCY")
     }

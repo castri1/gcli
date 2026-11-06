@@ -4,11 +4,12 @@
 //!   3. register it below. The header and the `:` palette list modules in this order.
 
 mod apps;
+mod builds;
 mod common;
 mod costs;
 
 use crate::tui::module::Module;
 
 pub fn all() -> Vec<Box<dyn Module>> {
-    vec![Box::new(apps::Apps::new()), Box::new(costs::Costs::new())]
+    vec![Box::new(apps::Apps::new()), Box::new(costs::Costs::new()), Box::new(builds::Builds::new())]
 }

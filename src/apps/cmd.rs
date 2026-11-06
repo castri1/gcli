@@ -9,14 +9,14 @@ use serde_json::{Value, json};
 
 use super::health::{HELD_EXPLAINED, Range};
 use super::report::versions_summary;
-use super::{Detail, Listing, Row, Sort, Tone, cells, columns, costs, report, sort};
+use super::{Column, Detail, Listing, Row, Sort, Tone, cells, columns, costs, report, sort};
 use crate::cli::{confirm, gcp_for, interactive, paint, print_json};
 use crate::config::Config;
 use crate::gcp::run;
 use crate::tui::chart::{fmt_count, fmt_ms, sparkline};
 use crate::util::{ellipsize, fmt_ago, fmt_duration, fmt_utc, now_secs, program};
 
-fn tone(text: &str, t: Tone) -> String {
+pub(crate) fn tone(text: &str, t: Tone) -> String {
     match t {
         Tone::Plain => text.to_string(),
         Tone::Muted => paint(text, "90"),
@@ -25,8 +25,40 @@ fn tone(text: &str, t: Tone) -> String {
     }
 }
 
-fn warn(text: &str) {
+pub(crate) fn warn(text: &str) {
     eprintln!("{}", paint(&format!("! {}", crate::util::sanitize(text)), "33"));
+}
+
+/// A table of `cols`: each column as wide as its widest cell (at most 40), the last one as long
+/// as it needs.
+pub(crate) fn print_table(cols: &[Column], table: Vec<Vec<(String, Tone)>>) {
+    let last = cols.len() - 1;
+    let widths: Vec<usize> = (0..cols.len())
+        .map(|i| table.iter().map(|r| r[i].0.chars().count()).chain([cols[i].head.len()]).max().unwrap_or(0).min(40))
+        .collect();
+    let line = |items: Vec<(String, Tone)>| {
+        let parts: Vec<String> = items
+            .into_iter()
+            .enumerate()
+            .map(|(i, (text, t))| {
+                if i == last {
+                    return tone(&text, t);
+                }
+                let text = ellipsize(&text, widths[i]);
+                let padded = if cols[i].right {
+                    format!("{text:>w$}", w = widths[i])
+                } else {
+                    format!("{text:<w$}", w = widths[i])
+                };
+                tone(&padded, t)
+            })
+            .collect();
+        parts.join("  ").trim_end().to_string()
+    };
+    println!("{}", paint(&line(cols.iter().map(|c| (c.head.to_string(), Tone::Plain)).collect()), "90;1"));
+    for row in table {
+        println!("{}", line(row));
+    }
 }
 
 /// `gcli apps [env] [--sort …] [--held] [--json]`. With `--held`, only the apps holding
@@ -59,35 +91,7 @@ pub fn list(config: &Config, env_name: &str, by: Sort, held_only: bool, json: bo
         println!("{} No app holds requests at its timeout ({env_name}, last 24 h).", paint("✓", "32"));
         return Ok(code);
     }
-    let cols = columns(costs.is_some());
-    let table: Vec<Vec<(String, Tone)>> = rows.iter().map(|r| cells(r, costs.is_some())).collect();
-    let last = cols.len() - 1;
-    let widths: Vec<usize> = (0..cols.len())
-        .map(|i| table.iter().map(|r| r[i].0.chars().count()).chain([cols[i].head.len()]).max().unwrap_or(0).min(40))
-        .collect();
-    let line = |items: Vec<(String, Tone)>| {
-        let parts: Vec<String> = items
-            .into_iter()
-            .enumerate()
-            .map(|(i, (text, t))| {
-                if i == last {
-                    return tone(&text, t);
-                }
-                let text = ellipsize(&text, widths[i]);
-                let padded = if cols[i].right {
-                    format!("{text:>w$}", w = widths[i])
-                } else {
-                    format!("{text:<w$}", w = widths[i])
-                };
-                tone(&padded, t)
-            })
-            .collect();
-        parts.join("  ").trim_end().to_string()
-    };
-    println!("{}", paint(&line(cols.iter().map(|c| (c.head.to_string(), Tone::Plain)).collect()), "90;1"));
-    for row in table {
-        println!("{}", line(row));
-    }
+    print_table(&columns(costs.is_some()), rows.iter().map(|r| cells(r, costs.is_some())).collect());
     let held = rows.iter().filter(|r| r.held()).count();
     let mut footer = vec![format!("{} app{}", rows.len(), if rows.len() == 1 { "" } else { "s" })];
     if held > 0 && !held_only {
@@ -140,6 +144,11 @@ fn print_detail(d: &Detail, project: &str, env_name: &str) {
     kv("Serving", format!("{}{created} · traffic {traffic}", s.revision()));
     if s.latest_not_ready() {
         kv("Newest", paint(&format!("{} is not ready", run::last_segment(&s.latest_created_revision)), "31"));
+    }
+    match &d.last_deploy {
+        Ok(Some(f)) => kv("Deploy", paint(&f.text(), "31")),
+        Ok(None) => {}
+        Err(e) => kv("Deploy", paint(&format!("! could not read the builds: {}", e.short()), "33")),
     }
     let max = s.max_instances().map_or("default".into(), |m| m.to_string());
     kv(

@@ -1,4 +1,5 @@
 mod apps;
+mod builds;
 mod cli;
 mod config;
 mod costs;
