@@ -83,6 +83,8 @@ pub enum Command {
     Build(crate::builds::cmd::OneArgs),
     /// What the environment's project costs, from the billing export (UTC days), and its spikes
     Costs(crate::costs::command::Args),
+    /// Cloud SQL from the outside: connections against the limit, disk, backups, and `--check`
+    Db(crate::db::cmd::Args),
     /// What an app wrote (or any Cloud Logging filter): list, search, follow, group the errors
     Logs(crate::logs::cmd::Args),
     /// Sign in to Google Cloud (runs `gcloud auth login --update-adc`)
@@ -169,7 +171,7 @@ pub(crate) fn current_env(config: &Config) -> Result<String> {
 }
 
 /// The environment named, or the current one.
-fn env_or_current(config: &Config, env: Option<String>) -> Result<String> {
+pub(crate) fn env_or_current(config: &Config, env: Option<String>) -> Result<String> {
     match env {
         Some(name) => config.env(&name).map(|_| name),
         None => current_env(config),
@@ -262,6 +264,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Builds(args) => crate::builds::cmd::list(config, args),
         Command::Build(args) => crate::builds::cmd::one(config, args),
         Command::Costs(args) => crate::costs::command::run(config, args),
+        Command::Db(args) => crate::db::cmd::run(config, args),
         Command::Logs(args) => crate::logs::cmd::run(config, args),
         Command::Mcp(args) => crate::mcp::serve(&loaded, args),
     }

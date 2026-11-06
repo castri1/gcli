@@ -3,6 +3,8 @@ mod builds;
 mod cli;
 mod config;
 mod costs;
+mod db;
+mod findings;
 mod gcp;
 mod logs;
 mod mcp;

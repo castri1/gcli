@@ -70,6 +70,8 @@ gcli logs APP [ENV] --errors --group [--since DURATION] [--json]       # the dis
 gcli logs [ENV] --filter EXPR [...]   # anything that isn't an app, by a Cloud Logging filter
 gcli costs [ENV] [--by service|app|sku] [--month YYYY-MM] [--days N] [--refresh] [--json]
 gcli costs [ENV] --check [--date YYYY-MM-DD] [--notify]   # exit 1: a spike; 2: could not read fresh costs
+gcli db [ENV] [--instance NAME] [--json]   # Cloud SQL: state, health, connections per database
+gcli db [ENV] --check [--json]             # exit 1: something needs attention; 2: could not read
 gcli envs [--json]         # the environments, and which one is current
 gcli use [ENV]             # set the current environment
 gcli add [NAME] [--project ID] [--region R] [--production]   # add an environment to the config
@@ -86,6 +88,7 @@ gcli mcp [--env NAME]      # MCP server on stdio: claude mcp add gcli -- gcli mc
 | A build | `↑↓` scroll the log · `z` log full screen (`/` search, `e`/`E` errors, `y` copy) · `c` copy a report for an AI agent · `r` refresh · `Esc` back |
 | Logs | `s` severity · `w` time window · `f` follow on/off · `t` the requests log · `a` another app · `r` read again · `/` search · `n` `N` next, previous · `e` `E` next, previous error · `y` copy every line · `↑↓` `g` `G` move · `Esc` `q` back |
 | Costs | `←→` Overview / By service / By app / Spikes · `↑↓` move · `Enter` a service's SKUs · `r` read again |
+| Database | `↑↓` `PgUp` `PgDn` `Home` `End` scroll · `←→` another instance, when there are several · `y` copy the connection name · `o` open in the Cloud console · `r` read again |
 
 ### A daily cost check
 
@@ -202,6 +205,51 @@ them oldest first and polls only while the module is on screen.
 `error_summary` (the patterns and counts, never the messages themselves) are read-only and limited
 by `gcli mcp --env`. Log text is handed over as data, and only what a search needs of each entry:
 no payloads, labels or traces, as logs may hold personal data.
+
+### Database
+
+gcli watches Cloud SQL from the outside, through the Admin API and Cloud Monitoring. It never
+connects to a database and reads no tables, data or credentials. An instance shared by many apps
+can run out of connections and take them all down at once, and catching that coming is the main job.
+
+`gcli db` shows each instance of the project: what it is (version, tier, `max_connections`, disk,
+backups, network, maintenance window), how it does over the last 24 hours (connections, CPU, memory
+and disk with sparklines, transaction ids, the last backup) and connections per database, most
+first, by state: active, idle, and idle in transaction, which holds its locks while doing nothing.
+Databases without a connection now are counted on one line; `--json` lists them all.
+
+`--check` says what needs attention, and exits 1 on something bad, 0 otherwise, or 2 when it could
+not read what it needs (and found nothing bad), for cron and CI:
+
+| What | Warn | Bad |
+|---|---|---|
+| The instance | | not `RUNNABLE`, or stopped by its activation policy |
+| Connections against `max_connections`, now and at the peak of the last 24 h | 80% | 95% |
+| Disk in use (with auto-resize on, at most a warning) | 85% | 95% |
+| CPU or memory, averaged over the last hour | 90% | |
+| Backups | the latest attempt failed | disabled, or the last success is over 36 h old |
+| Transaction ids towards wraparound | 50% | 80% |
+| Deadlocks in the last 24 h | any, naming the databases | |
+
+- **The limit** is the `max_connections` flag. When it is not set the limit depends on the tier:
+  gcli says it is unknown, computes no percentage and does not judge connections against it.
+- **The peak** is the busiest minute of the whole instance. Each database's peak has its own column,
+  but they fall at different times and do not add up to it.
+- **Days until full** show when the disk is growing and auto-resize is off, estimated from a line
+  fitted to the last 7 days' usage.
+- **Per database, not per app.** Cloud Monitoring counts connections per database. Apps can share
+  one database, a schema each, and then they cannot be told apart from the outside, so gcli shows
+  database names and does not guess at apps.
+- **Replicas** have no backups of their own to check; a stopped instance reports no metrics; only
+  Postgres reports connections, transaction ids and deadlocks here.
+- By state, connections are those of the newest minute reported, sampled apart from the total, so
+  the two can differ by a few.
+
+**Database** in the UI shows the same with charts of connections and CPU, what needs attention
+first, and a badge in the header when something is bad. **MCP.** `database_health` answers the
+summary, the findings and connections per database, read-only and limited by `gcli mcp --env`.
+
+Reading needs `roles/cloudsql.viewer` and `roles/monitoring.viewer`.
 
 ### Costs
 
