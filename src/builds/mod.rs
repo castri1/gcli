@@ -643,6 +643,14 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_key_printed_line_by_line_stays_out_of_an_excerpt() {
+        let key = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj\nMZR7h2xq4bN0pL5sT8vW3yK6dF1gJ9cA2eU7iO4mZ0xQ1rSBaHw5nYtPuV+6lEoG\n-----END PRIVATE KEY-----";
+        for line in key.lines() {
+            assert_eq!(excerpt_line(line), "[redacted]", "{line}");
+        }
+    }
+
+    #[test]
     fn only_a_service_name_names_an_app() {
         for name in ["shop", "orders-2", "a"] {
             assert!(is_service_name(name), "{name}");

@@ -114,11 +114,18 @@ fn is_token_char(c: char) -> bool {
 /// A name that says its value is a credential: `password`, `MCP_API_TOKEN`, `client_secret`.
 /// Ends with, so `tokens=5` and `token_count=5` stay.
 fn names_a_secret(name: &str) -> bool {
-    [
+    const ENDS: &[&str] = &[
         "password",
         "passwd",
+        "passphrase",
         "pwd",
+        "_pass",
+        "-pass",
         "secret",
+        "secret_key",
+        "secret-key",
+        "access_key",
+        "access-key",
         "token",
         "apikey",
         "api_key",
@@ -126,9 +133,9 @@ fn names_a_secret(name: &str) -> bool {
         "credential",
         "credentials",
         "private_key",
-    ]
-    .iter()
-    .any(|n| name.ends_with(n))
+        "private-key",
+    ];
+    name == "pass" || ENDS.iter().any(|n| name.ends_with(n))
 }
 
 /// A name whose whole value, to the end of the string or the line, is a credential.
@@ -148,9 +155,36 @@ fn token_at(rest: &str, before: Option<char>) -> Option<usize> {
     })
 }
 
-/// The name that ends at the end of `before`, lower-cased, past a closing quote.
+/// A line of a key's body, cut from its block: long, nothing but base64, of all three kinds of
+/// character (so a commit id or a digest, all hex in one case, stays).
+fn is_key_line(text: &str) -> bool {
+    let line = text.trim();
+    line.len() >= 40
+        && line.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '='))
+        && line.contains(|c: char| c.is_ascii_uppercase())
+        && line.contains(|c: char| c.is_ascii_lowercase())
+        && line.contains(|c: char| c.is_ascii_digit())
+}
+
+/// Where the quoted text starting at `body` ends: at the first `quote` no backslash escapes.
+fn closing_quote(body: &str, quote: char) -> usize {
+    let mut escaped = false;
+    for (i, c) in body.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '\n' => return i,
+            c if c == quote => return i,
+            _ => {}
+        }
+    }
+    body.len()
+}
+
+/// The name that ends at the end of `before`, lower-cased, past spaces and quotes, escaped ones
+/// included (`\"password\" : `, as JSON inside a log's string has it).
 fn name_before(before: &str) -> String {
-    let before = before.strip_suffix(['"', '\'']).unwrap_or(before);
+    let before = before.trim_end_matches([' ', '"', '\'', '\\']);
     let rest = before.trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-');
     before[rest.len()..].to_ascii_lowercase()
 }
@@ -161,7 +195,8 @@ fn name_before(before: &str) -> String {
 /// format, so reports and agents get log lines without what is plainly a secret; it is not a
 /// guarantee that none is left.
 pub fn redact_tokens(text: &str) -> String {
-    if text.contains("-----BEGIN") && text.contains("PRIVATE KEY") {
+    let key_block = text.contains("PRIVATE KEY") && (text.contains("-----BEGIN") || text.contains("-----END"));
+    if key_block || is_key_line(text) {
         return REDACTED.to_string();
     }
     let mut out = String::with_capacity(text.len());
@@ -188,19 +223,24 @@ pub fn redact_tokens(text: &str) -> String {
                 continue;
             }
         }
-        // The user and password of a URL.
-        if let Some(authority) = rest.strip_prefix("://") {
-            let end = authority
-                .find(|c: char| c.is_whitespace() || matches!(c, '/' | '?' | '#' | '"' | '\''))
-                .unwrap_or(authority.len());
-            if let Some(at) = authority[..end].rfind('@') {
+        // The user and password of a URL. Past the first `/` too when it reads `user:pass@`:
+        // a password can hold one.
+        if let Some(rest_of_url) = rest.strip_prefix("://") {
+            let word =
+                rest_of_url.find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'')).unwrap_or(rest_of_url.len());
+            let host = rest_of_url[..word].find(['/', '?', '#']).unwrap_or(word);
+            let at = rest_of_url[..host].rfind('@').or_else(|| {
+                let at = rest_of_url[..word].rfind('@')?;
+                rest_of_url[..at].contains(':').then_some(at)
+            });
+            if let Some(at) = at {
                 out.push_str("://");
                 out.push_str(REDACTED);
                 i += 3 + at;
                 continue;
             }
         }
-        // `name=value`, `name: value`, `"name":"value"`.
+        // `name=value`, `name: value`, `"name":"value"`, `\"name\":\"value\"`.
         if c == '=' || c == ':' {
             let name = name_before(&text[..i]);
             let header = names_a_header(&name);
@@ -208,18 +248,19 @@ pub fn redact_tokens(text: &str) -> String {
                 let after = &rest[1..];
                 let spaces = after.len() - after.trim_start_matches(' ').len();
                 let value = &after[spaces..];
-                let quote = value.chars().next().filter(|q| matches!(q, '"' | '\''));
-                let value = value.get(quote.map_or(0, char::len_utf8)..).unwrap_or("");
-                let ends = |v: char| match quote {
-                    Some(q) => v == q || v == '\n',
-                    None if header => v == '\n',
-                    None => v.is_whitespace() || matches!(v, '&' | ',' | ';' | ')' | '}' | ']' | '"' | '\''),
+                let opening = ["\\\"", "\\'", "\"", "'"].into_iter().find(|o| value.starts_with(o));
+                let body = &value[opening.map_or(0, str::len)..];
+                let len = match opening {
+                    // Inside a JSON string: it closes with the same escaped quote.
+                    Some(o) if o.len() > 1 => body.find(o).or_else(|| body.find('\n')).unwrap_or(body.len()),
+                    Some(o) => closing_quote(body, if o == "\"" { '"' } else { '\'' }),
+                    None if header => body.find('\n').unwrap_or(body.len()),
+                    None => body.find(char::is_whitespace).unwrap_or(body.len()),
                 };
-                let len = value.find(ends).unwrap_or(value.len());
-                // After a colon, a short bare word is prose (`token: expired`), not a value.
-                let enough = if c == ':' && quote.is_none() && !header { len >= 8 } else { len >= 1 };
-                if enough {
-                    let head = 1 + spaces + quote.map_or(0, char::len_utf8);
+                // After a colon, a short bare word next to "token" is prose (`token: expired`).
+                let prose = c == ':' && opening.is_none() && !header && name.ends_with("token") && len < 8;
+                if len >= 1 && !prose {
+                    let head = 1 + spaces + opening.map_or(0, str::len);
                     out.push_str(&rest[..head]);
                     out.push_str(REDACTED);
                     i += head + len;
@@ -271,6 +312,17 @@ mod tests {
             (r#"{"password": "a b c"}"#, r#"{"password": "[redacted]"}"#),
             ("Cookie: a=1; b=2", "Cookie: [redacted]"),
             ("key ghp_abcdefghijklmnopqrst1234", "key [redacted]"),
+            (r#"{\"password\":\"s3 cret\",\"n\":1}"#, r#"{\"password\":\"[redacted]\",\"n\":1}"#),
+            (r#"{"token":"a\"b c","n":1}"#, r#"{"token":"[redacted]","n":1}"#),
+            ("password = abc", "password = [redacted]"),
+            ("password: short", "password: [redacted]"),
+            ("token=a,b;c&d next", "token=[redacted] next"),
+            ("secret_key=x", "secret_key=[redacted]"),
+            ("passphrase=x", "passphrase=[redacted]"),
+            ("db_pass=x", "db_pass=[redacted]"),
+            ("postgres://u:p/ss@10.0.0.1/db", "postgres://[redacted]@10.0.0.1/db"),
+            ("-----END PRIVATE KEY-----", "[redacted]"),
+            ("MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj", "[redacted]"),
             ("-----BEGIN PRIVATE KEY----- abc", "[redacted]"),
         ] {
             assert_eq!(redact_tokens(text), want, "{text}");
@@ -288,6 +340,10 @@ mod tests {
             "the bearer of bad news",
             "ñandú: ok = sí",
             "ssh git@example.com",
+            "bypass=1",
+            "https://example.com/react@18.3.1/index.js",
+            "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+            "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b",
             "no-sk-here risk-assessment-for-the-whole-year",
         ] {
             assert_eq!(redact_tokens(text), text);
