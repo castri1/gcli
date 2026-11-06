@@ -17,6 +17,7 @@ pub mod budgets;
 pub mod error;
 pub mod gcloud;
 pub mod http;
+pub mod logging;
 #[cfg(test)]
 pub mod mock;
 pub mod monitoring;
