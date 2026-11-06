@@ -23,6 +23,7 @@ pub mod logging;
 pub mod mock;
 pub mod monitoring;
 pub mod run;
+pub mod scheduler;
 pub mod secrets;
 
 use std::collections::HashSet;
