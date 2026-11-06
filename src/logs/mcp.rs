@@ -33,7 +33,7 @@ fn entry(e: &Entry) -> Value {
     let mut v = json!({
         "time": e.timestamp,
         "severity": super::severity(e),
-        "message": ellipsize(&message, MAX_MESSAGE),
+        "message": ellipsize(&crate::gcp::error::redact_tokens(&message), MAX_MESSAGE),
         "log": super::log_id(e),
     });
     if let Some(revision) = e.resource.labels.get("revision_name") {

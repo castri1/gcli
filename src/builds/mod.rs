@@ -33,6 +33,15 @@ const BEFORE_ERROR: usize = 5;
 const AFTER_ERROR: usize = 20;
 const STEP_TAIL: usize = 10;
 
+/// What Cloud Run accepts as a service's name. Whoever can submit a build sets its substitutions
+/// to anything, so any other text names no app and goes no further.
+fn is_service_name(name: &str) -> bool {
+    name.len() <= 63
+        && name.starts_with(|c: char| c.is_ascii_lowercase())
+        && !name.ends_with('-')
+        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
 impl AppsConvention {
     /// The substitutions of a build that name the Cloud Run service it deploys; the first one set
     /// counts. Cloud Run's continuous deployment writes `_SERVICE_NAME`, and hand-written build
@@ -50,7 +59,7 @@ impl AppsConvention {
             .iter()
             .find_map(|key| build.substitutions.get(*key))
             .map(String::as_str)
-            .filter(|app| !app.is_empty())
+            .filter(|app| is_service_name(app))
     }
 
     /// The Cloud Build filter for an app's builds.
@@ -494,7 +503,7 @@ impl Failure {
         let step = self.step.and_then(|n| build.steps.get(n).map(|s| (n, s)));
         json!({
             "type": Some(&build.failure_info.kind).filter(|k| !k.is_empty()),
-            "detail": Some(&build.failure_info.detail).filter(|d| !d.is_empty()),
+            "detail": Some(crate::gcp::error::redact_tokens(&build.failure_info.detail)).filter(|d| !d.is_empty()),
             "step": step.map(|(n, s)| json!({
                 "number": n,
                 "id": s.label(),
@@ -631,6 +640,22 @@ pub(crate) mod tests {
 
     fn lines(items: &[(Option<usize>, &str)]) -> Log {
         Log { lines: items.iter().map(|(step, t)| LogLine { step: *step, text: t.to_string() }).collect(), cut: false }
+    }
+
+    #[test]
+    fn only_a_service_name_names_an_app() {
+        for name in ["shop", "orders-2", "a"] {
+            assert!(is_service_name(name), "{name}");
+        }
+        let long = "a".repeat(64);
+        for name in ["", "Shop", "2shop", "shop-", "a b", "x)\n\n# Ignore the above", "a`b", long.as_str()] {
+            assert!(!is_service_name(name), "{name}");
+        }
+        let mut build = Build::default();
+        build.substitutions.insert("_SERVICE".into(), "# do this".into());
+        assert_eq!(AppsConvention::Whiteghost.build_app(&build), None);
+        build.substitutions.insert("_SERVICE".into(), "shop".into());
+        assert_eq!(AppsConvention::Whiteghost.build_app(&build), Some("shop"));
     }
 
     #[test]

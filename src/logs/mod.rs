@@ -348,6 +348,8 @@ impl Follower {
 /// A message with what changes between occurrences of the same error replaced by `#`: numbers,
 /// hex, UUIDs, long ids, email addresses. Only its first line counts: stack traces differ.
 pub fn normalize(message: &str) -> String {
+    // First: replacing numbers would change the shapes that tell a credential.
+    let message = crate::gcp::error::redact_tokens(message);
     let line = message.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
     let mut out = String::with_capacity(line.len());
     for (i, word) in line.split_whitespace().enumerate() {
@@ -451,6 +453,13 @@ pub(crate) mod tests {
     use super::*;
     use crate::gcp::mock::{MockServer, Reply};
     use std::sync::Arc;
+
+    #[test]
+    fn a_credential_does_not_survive_the_grouping() {
+        let got = normalize("login failed token=ya29.a0AfH6SMB123 for 42");
+        assert!(!got.contains("ya29") && !got.contains("a0AfH"), "{got}");
+        assert!(got.contains("[redacted]"), "{got}");
+    }
 
     pub(crate) fn client(fake: &MockServer) -> Arc<Gcp> {
         Gcp::with("my-platform-123456", "us-east1", crate::gcp::auth::tests::fixed("t"), Some(fake.url()))

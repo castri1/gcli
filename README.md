@@ -165,7 +165,7 @@ A failed build opens its log at the first line of the failing step that says an 
 files and packages like `error-handler.ts`, and warnings, do not count), or at the step's last line
 when none does. Log text comes from Cloud Logging, whose retention (30 days by default) is how far
 back a build's log can be read. Reports and the MCP server hand on the lines around the first error
-and the end of the step, with tokens redacted and marked as data. Substitutions other than the ones
+and the end of the step, marked as data, with what looks like a credential replaced (a best effort; `--log` and `gcli logs` show the text as it is, to whoever can already read it). Substitutions other than the ones
 gcli reads, and steps' arguments and environment, are never shown or asked for.
 
 **MCP.** `list_builds` and `build_failure` read the same, read-only.
