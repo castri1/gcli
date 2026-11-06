@@ -156,10 +156,19 @@ fn is_base64_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=')
 }
 
-/// Several short segments between slashes. Random base64 holds a `/` only now and then, so it has
-/// few, and long.
+/// Short segments with slashes close together, and no `+` or `=`. Random base64 holds a `/` only
+/// now and then, so few runs of it pass; those that do are a best effort's known limit.
 fn looks_like_path(run: &str) -> bool {
-    run.matches('/').count() >= 3 && run.split('/').all(|segment| segment.len() <= 32)
+    let slashes = run.matches('/').count();
+    slashes >= 3
+        && run.len() / slashes <= 16
+        && !run.contains(['+', '='])
+        && run.split('/').all(|segment| segment.len() <= 32)
+}
+
+/// Where the last `word` stands alone in `line`: `END`, not the end of `APPEND`.
+fn last_word(line: &str, word: &str) -> Option<usize> {
+    line.rmatch_indices(word).map(|(i, _)| i).find(|&i| !line[..i].ends_with(|c: char| c.is_ascii_alphabetic()))
 }
 
 /// How long the run of base64 at the start of `rest` is, when it reads like a key's body or a
@@ -191,8 +200,8 @@ pub fn in_key_block<'a, S: Eq + std::hash::Hash>(lines: impl Iterator<Item = (S,
     lines
         .map(|(source, line)| {
             let marker = is_key_marker(line);
-            let begin = line.find("-----BEGIN ").filter(|_| marker);
-            let end = line.rfind("-----END ").filter(|_| marker);
+            let begin = last_word(line, "BEGIN").filter(|_| marker);
+            let end = last_word(line, "END").filter(|_| marker);
             match (begin, end) {
                 (Some(b), Some(e)) if e > b => {
                     inside.remove(&source);
@@ -384,6 +393,8 @@ mod tests {
             ("postgres://u:p/ss@10.0.0.1/db", "postgres://[redacted]@10.0.0.1/db"),
             ("-----END PRIVATE KEY-----", "[redacted]"),
             ("/IEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj", "[redacted]"),
+            ("MIIEvQIB/DANBgkqhkiG9w0B/QEFAASCBKcw/gSjAgEAAoIBAQC7VJTUt9Us8cKj", "[redacted]"),
+            ("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLE+KEY1", "[redacted]"),
             ("MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj", "[redacted]"),
             ("-----BEGIN PRIVATE KEY----- abc", "[redacted]"),
         ] {
@@ -403,9 +414,13 @@ mod tests {
             (1, "after"),
             (3, "-----BEGIN PRIVATE KEY----- abc -----END PRIVATE KEY-----"),
             (3, "after"),
+            (4, "----- BEGIN RSA PRIVATE KEY -----"),
+            (4, "c2hvcnQ="),
+            (4, "-----END PRIVATE KEY----- -----BEGIN PRIVATE KEY-----"),
+            (4, "c2hvcnQ="),
         ];
         let got = in_key_block(lines.iter().map(|(s, l)| (*s, *l)));
-        assert_eq!(got, [true, false, true, true, true, true, false, true, false]);
+        assert_eq!(got, [true, false, true, true, true, true, false, true, false, true, true, true, true]);
     }
 
     #[test]
