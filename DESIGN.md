@@ -158,8 +158,8 @@ on its own: when the cost data is missing or old it asks the person to run `gcli
 - **Cloud SQL**: connections against `max_connections`, top queries, storage.
 - **Exposure**: which apps are reachable without IAP (ingress, `run.app`, public paths).
 - **Scheduler**: cron jobs, last run, failures, duration against the timeout.
-- **Cloud-side daily check**: the same `--check` running in a small scheduled job that writes to
-  Weave, for when the laptop is closed.
+- **Cloud-side daily check**: the same `--check` running in a small scheduled job that posts to a
+  chat channel, for when the laptop is closed.
 
 ## Architecture
 
