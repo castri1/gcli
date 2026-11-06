@@ -156,16 +156,22 @@ fn is_base64_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=')
 }
 
+/// Several short segments between slashes. Random base64 holds a `/` only now and then, so it has
+/// few, and long.
+fn looks_like_path(run: &str) -> bool {
+    run.matches('/').count() >= 3 && run.split('/').all(|segment| segment.len() <= 32)
+}
+
 /// How long the run of base64 at the start of `rest` is, when it reads like a key's body or a
 /// random secret: long, of all three kinds of character (so a commit id or a digest, all hex in
-/// one case, stays), and not the first part of a path or a name (`src/SomeLongName2.ts`).
+/// one case, stays), and not a path or the first part of a name (`src/SomeLongName2.ts`).
 fn key_run_at(rest: &str) -> Option<usize> {
     let len = rest.find(|c| !is_base64_char(c)).unwrap_or(rest.len());
     let run = &rest[..len];
     let goes_on = rest[len..].starts_with(['.', '-', '_']);
     (len >= 40
         && !goes_on
-        && !run.starts_with('/')
+        && !looks_like_path(run)
         && run.contains(|c: char| c.is_ascii_uppercase())
         && run.contains(|c: char| c.is_ascii_lowercase())
         && run.contains(|c: char| c.is_ascii_digit()))
@@ -178,21 +184,30 @@ fn is_key_marker(line: &str) -> bool {
 
 /// For each line of a log read line by line, whether it sits in a private key's block: from its
 /// BEGIN line to its END line, or to the end of the log. A key's last lines can be short enough
-/// to look like nothing.
-pub fn in_key_block<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<bool> {
-    let mut inside = false;
+/// to look like nothing. Each line comes with its source (a build's step): sources running at the
+/// same time mix their lines, and one must not close another's block.
+pub fn in_key_block<'a, S: Eq + std::hash::Hash>(lines: impl Iterator<Item = (S, &'a str)>) -> Vec<bool> {
+    let mut inside = std::collections::HashSet::new();
     lines
-        .map(|line| {
+        .map(|(source, line)| {
             let marker = is_key_marker(line);
-            if marker && line.contains("BEGIN") {
-                inside = !line.contains("END");
-                return true;
+            let begin = line.find("-----BEGIN ").filter(|_| marker);
+            let end = line.rfind("-----END ").filter(|_| marker);
+            match (begin, end) {
+                (Some(b), Some(e)) if e > b => {
+                    inside.remove(&source);
+                    true
+                }
+                (Some(_), _) => {
+                    inside.insert(source);
+                    true
+                }
+                (None, Some(_)) => {
+                    inside.remove(&source);
+                    true
+                }
+                (None, None) => inside.contains(&source),
             }
-            if marker && line.contains("END") {
-                inside = false;
-                return true;
-            }
-            inside
         })
         .collect()
 }
@@ -368,11 +383,29 @@ mod tests {
             ("Step 2: MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj", "Step 2: [redacted]"),
             ("postgres://u:p/ss@10.0.0.1/db", "postgres://[redacted]@10.0.0.1/db"),
             ("-----END PRIVATE KEY-----", "[redacted]"),
+            ("/IEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj", "[redacted]"),
             ("MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj", "[redacted]"),
             ("-----BEGIN PRIVATE KEY----- abc", "[redacted]"),
         ] {
             assert_eq!(redact_tokens(text), want, "{text}");
         }
+    }
+
+    #[test]
+    fn a_key_block_is_followed_per_source() {
+        let lines = [
+            (1, "APPEND -----BEGIN PRIVATE KEY-----"),
+            (2, "another step"),
+            (1, "c2hvcnQ="),
+            (2, "-----END PRIVATE KEY-----"),
+            (1, "c2hvcnQ="),
+            (1, "-----END PRIVATE KEY-----"),
+            (1, "after"),
+            (3, "-----BEGIN PRIVATE KEY----- abc -----END PRIVATE KEY-----"),
+            (3, "after"),
+        ];
+        let got = in_key_block(lines.iter().map(|(s, l)| (*s, *l)));
+        assert_eq!(got, [true, false, true, true, true, true, false, true, false]);
     }
 
     #[test]
@@ -387,6 +420,7 @@ mod tests {
             "ñandú: ok = sí",
             "ssh git@example.com",
             "bypass=1",
+            "-----BEGIN CERTIFICATE-----",
             "src/components/SomeVeryLongComponentNameWithNumber2AndMore.tsx",
             "/workspace/packages/MyComponent/SomeOtherFolder2/AndAnotherOneHere",
             "https://example.com/react@18.3.1/index.js",

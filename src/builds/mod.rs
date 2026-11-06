@@ -487,7 +487,7 @@ impl Failure {
         chosen.extend(&kept[kept.len().saturating_sub(STEP_TAIL)..]);
         chosen.sort_unstable();
         chosen.dedup();
-        let hidden = in_key_block(log.lines.iter().map(|l| l.text.as_str()));
+        let hidden = in_key_block(log.lines.iter().map(|l| (l.step, l.text.as_str())));
         let excerpt = chosen
             .into_iter()
             .map(|i| (i, if hidden[i] { "[redacted]".to_string() } else { excerpt_line(&log.lines[i].text) }))
