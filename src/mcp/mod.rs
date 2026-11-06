@@ -382,7 +382,8 @@ pub(super) mod tests {
                 "error_summary",
                 "database_health",
                 "list_crons",
-                "cron_failures"
+                "cron_failures",
+                "platform_health"
             ]
         );
         for t in tools {

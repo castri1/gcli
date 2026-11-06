@@ -42,6 +42,23 @@ pub struct Environment {
     /// How apps are recognized among the project's resources.
     #[serde(default)]
     pub apps: AppsConvention,
+    /// What the Platform module should know about this environment.
+    #[serde(default, skip_serializing_if = "PlatformConfig::is_empty")]
+    pub platform: PlatformConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PlatformConfig {
+    /// Apps meant to be reachable from the internet at their `run.app` URL. They are shown as
+    /// listed instead of being reported; one that is no longer exposed is reported.
+    pub exposed: Vec<String>,
+}
+
+impl PlatformConfig {
+    fn is_empty(&self) -> bool {
+        self.exposed.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -241,6 +258,9 @@ impl Config {
             .map(|(name, mut env)| {
                 env.project = sanitize(env.project.trim());
                 env.region = sanitize(env.region.trim());
+                for app in &mut env.platform.exposed {
+                    *app = sanitize(app.trim());
+                }
                 if let Some(b) = &mut env.billing {
                     b.account = sanitize(b.account.trim());
                     b.export_table = sanitize(b.export_table.trim());
@@ -512,6 +532,17 @@ defaults:
         );
         // No project set in gcloud: no environment.
         assert!(from_gcloud(&gcloud::Properties::default()).environments.is_empty());
+    }
+
+    #[test]
+    fn the_apps_open_on_purpose_are_read_per_environment() {
+        let text = "environments:\n  prod:\n    project: p\n    platform:\n      exposed: [ shop, \"orders\\e[2J \" ]\n  dev:\n    project: d\n";
+        let c = parse(text, &gcloud::Properties::default()).unwrap();
+        assert_eq!(c.environments["prod"].platform.exposed, ["shop", "orders"]);
+        assert!(c.environments["dev"].platform.exposed.is_empty());
+        // Left out when empty, so `add` does not write it for every environment.
+        let yaml = serde_saphyr::to_string(&c.environments["dev"]).unwrap();
+        assert!(!yaml.contains("platform"), "{yaml}");
     }
 
     #[test]
