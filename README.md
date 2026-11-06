@@ -61,7 +61,7 @@ gcli app APP [ENV] [--json | --report]   # one app: health, revisions, secrets (
 gcli apps restart APP [ENV] [--yes]      # new revision, same config: re-reads `latest` secrets
 gcli apps min APP N [ENV] [--yes]        # service-level min instances (no new revision)
 gcli costs [ENV] [--by service|app|sku] [--month YYYY-MM] [--days N] [--refresh] [--json]
-gcli costs [ENV] --check [--date YYYY-MM-DD]   # exit 1: a spike; 2: could not read fresh costs
+gcli costs [ENV] --check [--date YYYY-MM-DD] [--notify]   # exit 1: a spike; 2: could not read fresh costs
 gcli envs [--json]         # the environments, and which one is current
 gcli use [ENV]             # set the current environment
 gcli add [NAME] [--project ID] [--region R] [--production]   # add an environment to the config
@@ -75,6 +75,33 @@ gcli mcp [--env NAME]      # MCP server on stdio: claude mcp add gcli -- gcli mc
 | Apps | `↑↓` move · `Enter` open · `/` search · `s` sort · `R` restart · `m` min instances · `y` copy the URL · `o` open in the Cloud console · `r` reload |
 | An app | `←→` Health / Revisions / Secrets · `w` 24 h / 6 h · `c` copy a report for an AI agent · `R` · `m` · `r` refresh · `Esc` back |
 | Costs | `←→` Overview / By service / By app / Spikes · `↑↓` move · `Enter` a service's SKUs · `r` read again |
+
+### A daily cost check
+
+`gcli costs ENV --check --notify` raises a desktop notification when something spiked and when it
+could not tell (signed out, say); a quiet day stays quiet. To run it every morning, schedule it
+with cron on Linux, Task Scheduler on Windows, or a launchd agent on macOS, which also runs a job
+missed while the Mac slept. Save this as `~/Library/LaunchAgents/com.gcli.costs-check.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.gcli.costs-check</string>
+  <key>ProgramArguments</key><array>
+    <string>/opt/homebrew/bin/gcli</string><string>costs</string><string>ENV</string>
+    <string>--check</string><string>--notify</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>
+</dict></plist>
+```
+
+and load it with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.gcli.costs-check.plist`.
+Costs are read by UTC day and the export runs up to 12 hours behind, so run it once that day is
+complete.
 
 ### Apps
 

@@ -46,6 +46,10 @@ pub struct Args {
     /// With --check: accept costs read longer ago than defaults.costs.autoRefreshHours
     #[arg(long, requires = "check")]
     allow_stale: bool,
+    /// With --check: also raise a desktop notification on a spike or when it cannot tell (for a
+    /// scheduled job nobody is watching)
+    #[arg(long, requires = "check")]
+    notify: bool,
     #[arg(long)]
     json: bool,
 }
@@ -63,9 +67,15 @@ pub fn run(config: &Config, args: Args) -> Result<ExitCode> {
         // Any failure to read (credentials, permissions, BigQuery) means "could not tell", never
         // the 1 that means "spikes": a cron job alerting on 1 would misread an outage.
         return check(config, &env, &args, &rule, now).or_else(|e| {
-            eprintln!("error: {}", crate::util::sanitize(&format!("{e:#}")));
-            if e.downcast_ref::<GcpError>().is_some_and(GcpError::is_login_required) {
+            let reason = crate::util::sanitize(&format!("{e:#}"));
+            eprintln!("error: {reason}");
+            let login = e.downcast_ref::<GcpError>().is_some_and(GcpError::is_login_required);
+            if login {
                 eprintln!("hint: run `{} login` (or press L in the UI)", crate::util::program());
+            }
+            if args.notify {
+                let (title, body) = could_not_tell(&env, if login { "Sign in again: gcli login" } else { &reason });
+                crate::platform::notify_and_wait(&title, &body);
             }
             Ok(ExitCode::from(STALE_EXIT))
         });
@@ -204,6 +214,10 @@ fn check(config: &Config, env: &str, args: &Args, rule: &Rule, now: f64) -> Resu
              run with --refresh, or --allow-stale to check the old read",
             fmt_ago(current.read_at)
         );
+        if args.notify {
+            let (title, body) = could_not_tell(env, &format!("The costs were read {}", fmt_ago(current.read_at)));
+            crate::platform::notify_and_wait(&title, &body);
+        }
         return Ok(ExitCode::from(STALE_EXIT));
     }
     let last = current.last_complete_day().ok_or_else(|| anyhow!("no complete day was read"))?;
@@ -220,6 +234,10 @@ fn check(config: &Config, env: &str, args: &Args, rule: &Rule, now: f64) -> Resu
         obtain(config, env, Kind::Days(need), args.refresh, now)?
     };
     let found = report::spikes(&s, day, rule).map_err(|e| anyhow!(e))?;
+    if args.notify && !found.is_empty() {
+        let (title, body) = spike_notification(env, day, &found, &s.currency);
+        crate::platform::notify_and_wait(&title, &body);
+    }
     if args.json {
         print_json(&json!({
             "env": env,
@@ -246,6 +264,28 @@ fn check(config: &Config, env: &str, args: &Args, rule: &Rule, now: f64) -> Resu
         println!("{}", paint(&format!("Rule: {} (defaults.costs in the config).", rule.describe()), "90"));
     }
     Ok(if found.is_empty() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+}
+
+/// Notifications are short: the most expensive first, and how many more.
+const NOTIFY_MAX_NAMES: usize = 3;
+
+fn spike_notification(env: &str, day: Day, found: &[Spike], currency: &str) -> (String, String) {
+    let mut sorted: Vec<&Spike> = found.iter().collect();
+    sorted.sort_by(|a, b| b.cost.total_cmp(&a.cost));
+    let mut names: Vec<String> = sorted
+        .iter()
+        .take(NOTIFY_MAX_NAMES)
+        .map(|x| format!("{} {}", ellipsize(&x.name, 30), money(x.cost, currency)))
+        .collect();
+    if found.len() > NOTIFY_MAX_NAMES {
+        names.push(format!("and {} more", found.len() - NOTIFY_MAX_NAMES));
+    }
+    let what = if found.len() == 1 { "1 cost spike".to_string() } else { format!("{} cost spikes", found.len()) };
+    (format!("gcli · {env}: {what}"), format!("{day} (UTC): {}", names.join(", ")))
+}
+
+fn could_not_tell(env: &str, reason: &str) -> (String, String) {
+    (format!("gcli · {env}: cost check failed"), ellipsize(reason, 160))
 }
 
 fn print_spikes(found: &[Spike], currency: &str) {
@@ -644,4 +684,41 @@ pub(crate) fn summary(s: &Snapshot, month: Day, view: &View, days: bool, by: Opt
         _ => {}
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::costs::tests::day;
+
+    fn spike(name: &str, cost: f64) -> Spike {
+        Spike {
+            name: name.into(),
+            kind: spikes::Kind::App,
+            day: day("2026-11-03"),
+            cost,
+            median: Some(0.5),
+            history_days: 14,
+        }
+    }
+
+    #[test]
+    fn a_notification_names_the_most_expensive_spikes() {
+        let d = day("2026-11-03");
+        let (title, body) = spike_notification("prod", d, &[spike("small", 1.5)], "USD");
+        assert_eq!(title, "gcli · prod: 1 cost spike");
+        assert_eq!(body, "2026-11-03 (UTC): small US$ 1.50");
+
+        let found = [spike("a", 1.0), spike("b", 4.0), spike("c", 3.0), spike("d", 2.0)];
+        let (title, body) = spike_notification("prod", d, &found, "USD");
+        assert_eq!(title, "gcli · prod: 4 cost spikes");
+        assert_eq!(body, "2026-11-03 (UTC): b US$ 4.00, c US$ 3.00, d US$ 2.00, and 1 more");
+    }
+
+    #[test]
+    fn a_failed_check_says_so_in_short() {
+        let (title, body) = could_not_tell("prod", &"x".repeat(500));
+        assert_eq!(title, "gcli · prod: cost check failed");
+        assert!(body.chars().count() <= 160, "{body}");
+    }
 }
