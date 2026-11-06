@@ -596,6 +596,11 @@ impl Module for Apps {
         match key.code {
             KeyCode::Char('R') => self.open_dialog(true),
             KeyCode::Char('m') => self.open_dialog(false),
+            KeyCode::Char('l') => {
+                if let Some(id) = self.current().map(|s| s.id().to_string()) {
+                    ctx.jump("Logs", id);
+                }
+            }
             KeyCode::Char('y') => {
                 if let Some(uri) = self.current().map(|s| s.uri.clone()).filter(|u| !u.is_empty()) {
                     copy(ctx, &uri, "URL copied");
@@ -721,6 +726,7 @@ impl Module for Apps {
                 ("w", "24h/6h"),
                 ("R", "restart"),
                 ("m", "min instances"),
+                ("l", "logs"),
                 ("c", "copy for AI"),
                 ("y", "copy URL"),
                 ("o", "console"),
@@ -733,6 +739,7 @@ impl Module for Apps {
             ("Enter", "open"),
             ("/", "search"),
             ("s", "sort"),
+            ("l", "logs"),
             ("R", "restart"),
             ("m", "min instances"),
             ("y", "copy URL"),

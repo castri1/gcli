@@ -226,6 +226,12 @@ pub trait Module {
         false
     }
 
+    /// True when this key goes to the module rather than to a global shortcut: while
+    /// [`capturing`](Self::capturing), and for the few keys a full-screen view needs for itself.
+    fn takes_key(&self, _key: &KeyEvent) -> bool {
+        self.capturing()
+    }
+
     /// False while the module wants the terminal to handle the mouse (text selection).
     fn wants_mouse(&self) -> bool {
         true

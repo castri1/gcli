@@ -58,6 +58,30 @@ impl LogView {
         }
     }
 
+    /// Empties the log, keeping the active search and the zoom.
+    pub fn reset(&mut self) {
+        self.lines.clear();
+        self.top = None;
+        self.note = None;
+    }
+
+    /// Shows the first line.
+    pub fn show_start(&mut self) {
+        self.top = Some(0);
+    }
+
+    /// True while the search field takes the keys.
+    pub fn searching(&self) -> bool {
+        self.searching
+    }
+
+    /// Text pasted into the search field.
+    pub fn paste(&mut self, text: &str) {
+        if self.searching {
+            self.search.insert_str(text, false);
+        }
+    }
+
     /// True while following the end of the log.
     pub fn following(&self) -> bool {
         self.top.is_none()

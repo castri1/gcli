@@ -6,9 +6,10 @@
 mod apps;
 mod common;
 mod costs;
+mod logs;
 
 use crate::tui::module::Module;
 
 pub fn all() -> Vec<Box<dyn Module>> {
-    vec![Box::new(apps::Apps::new()), Box::new(costs::Costs::new())]
+    vec![Box::new(apps::Apps::new()), Box::new(costs::Costs::new()), Box::new(logs::Logs::new())]
 }

@@ -201,7 +201,7 @@ impl App {
             return;
         }
         let active = self.active;
-        if self.modules[active].capturing() {
+        if self.modules[active].takes_key(&key) {
             self.with_module(active, |m, ctx| m.key(key, ctx));
             return;
         }

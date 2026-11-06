@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod costs;
 mod gcp;
+mod logs;
 mod mcp;
 mod modules;
 mod platform;

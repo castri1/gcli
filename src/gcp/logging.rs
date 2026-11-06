@@ -95,19 +95,37 @@ struct Page {
     next_page_token: String,
 }
 
+/// What a read found.
+#[derive(Debug, Default)]
+pub struct Entries {
+    pub list: Vec<Entry>,
+    /// Google has more to give: over `max`, or it stopped searching at its own time limit
+    /// before the end of the filter's time range (so an empty list does not mean there are none).
+    pub more: bool,
+}
+
 /// Up to `max` entries of the client's project that match `filter`, newest first or oldest first.
 /// A filter without a `timestamp` condition covers only the last 24 hours.
-pub fn entries(gcp: &Gcp, filter: &str, newest_first: bool, max: usize) -> Result<Vec<Entry>> {
+pub fn entries(gcp: &Gcp, filter: &str, newest_first: bool, max: usize) -> Result<Entries> {
+    read(gcp, filter, newest_first, max, MAX_PAGES)
+}
+
+/// [`entries`] in exactly one request, for what polls and must stay inside the rate limit.
+pub fn first_page(gcp: &Gcp, filter: &str, newest_first: bool, max: usize) -> Result<Entries> {
+    read(gcp, filter, newest_first, max, 1)
+}
+
+fn read(gcp: &Gcp, filter: &str, newest_first: bool, max: usize, pages: usize) -> Result<Entries> {
     let url = "https://logging.googleapis.com/v2/entries:list";
     let order = if newest_first { "timestamp desc" } else { "timestamp asc" };
     let mut all = Vec::new();
     let mut token = String::new();
-    for _ in 0..MAX_PAGES {
+    for _ in 0..pages {
         let mut body = json!({
             "resourceNames": [format!("projects/{}", gcp.project)],
             "filter": filter,
             "orderBy": order,
-            "pageSize": (max - all.len()).clamp(1, PAGE_SIZE),
+            "pageSize": max.saturating_sub(all.len()).clamp(1, PAGE_SIZE),
         });
         if !token.is_empty() {
             body["pageToken"] = json!(token);
@@ -119,8 +137,9 @@ pub fn entries(gcp: &Gcp, filter: &str, newest_first: bool, max: usize) -> Resul
             break;
         }
     }
+    let more = !token.is_empty() || all.len() > max;
     all.truncate(max);
-    Ok(all)
+    Ok(Entries { list: all, more })
 }
 
 #[cfg(test)]
@@ -142,7 +161,9 @@ mod tests {
             Reply::json(200, r#"{"entries":[{"insertId":"c"},{"insertId":"d"}],"nextPageToken":"more"}"#),
         ]);
         let gcp = Gcp::with("p", "us-east1", crate::gcp::auth::tests::fixed("t"), Some(server.url()));
-        let got = entries(&gcp, "severity>=ERROR", true, 3).unwrap();
+        let read = entries(&gcp, "severity>=ERROR", true, 3).unwrap();
+        assert!(read.more, "the last page had a token");
+        let got = read.list;
         assert_eq!(got.iter().map(|e| e.insert_id.as_str()).collect::<Vec<_>>(), ["a", "b", "c"]);
         assert_eq!(got[0].at(), parse_rfc3339("2026-11-05T10:00:00.5Z"));
         assert!(got[0].is_problem() && !got[1].is_problem());
@@ -156,6 +177,17 @@ mod tests {
         let last: Value = serde_json::from_str(&requests[2].body).unwrap();
         assert_eq!(last["pageToken"], "more");
         assert_eq!(last["pageSize"], 1, "only what is still missing");
+    }
+
+    #[test]
+    fn a_poll_is_one_request_and_says_when_google_stopped_early() {
+        let server = MockServer::start(vec![Reply::json(200, r#"{"nextPageToken":"gave-up"}"#)]);
+        let gcp = Gcp::with("p", "us-east1", crate::gcp::auth::tests::fixed("t"), Some(server.url()));
+        let read = first_page(&gcp, "severity>=ERROR", false, 5).unwrap();
+        assert!(read.list.is_empty() && read.more, "empty, and it does not mean there are none");
+        assert_eq!(server.requests().len(), 1);
+        let body: Value = serde_json::from_str(&server.requests()[0].body).unwrap();
+        assert_eq!(body["orderBy"], "timestamp asc");
     }
 
     #[test]
