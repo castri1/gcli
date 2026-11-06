@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use crate::apps::{Column, Tone};
 use crate::config::AppsConvention;
 use crate::gcp::build::{self, Build, Log, LogLine, Step};
-use crate::gcp::error::redact;
+use crate::gcp::error::{in_key_block, redact};
 use crate::gcp::logging::quote;
 use crate::gcp::monitoring::rfc3339;
 use crate::gcp::run::{self, Service};
@@ -487,7 +487,11 @@ impl Failure {
         chosen.extend(&kept[kept.len().saturating_sub(STEP_TAIL)..]);
         chosen.sort_unstable();
         chosen.dedup();
-        let excerpt = chosen.into_iter().map(|i| (i, excerpt_line(&log.lines[i].text))).collect();
+        let hidden = in_key_block(log.lines.iter().map(|l| l.text.as_str()));
+        let excerpt = chosen
+            .into_iter()
+            .map(|i| (i, if hidden[i] { "[redacted]".to_string() } else { excerpt_line(&log.lines[i].text) }))
+            .collect();
         let said = first_error.is_some_and(|i| says_error(&log.lines[i].text));
         Failure { step, first_error, said, excerpt, lines: log.lines.len(), cut: log.cut }
     }
@@ -648,6 +652,16 @@ pub(crate) mod tests {
         for line in key.lines() {
             assert_eq!(excerpt_line(line), "[redacted]", "{line}");
         }
+    }
+
+    #[test]
+    fn a_failure_hides_a_whole_key_block_short_lines_too() {
+        let text = ["before", "-----BEGIN PRIVATE KEY-----", "c2hvcnQ=", "-----END PRIVATE KEY-----", "after"];
+        let log =
+            Log { lines: text.iter().map(|t| LogLine { step: None, text: (*t).to_string() }).collect(), cut: false };
+        let failure = Failure::of(&Build::default(), &log);
+        let shown: Vec<&str> = failure.excerpt.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(shown, ["before", "[redacted]", "[redacted]", "[redacted]", "after"]);
     }
 
     #[test]

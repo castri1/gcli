@@ -111,36 +111,33 @@ fn is_token_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '/' | '+' | '=' | '~')
 }
 
-/// A name that says its value is a credential: `password`, `MCP_API_TOKEN`, `client_secret`.
-/// Ends with, so `tokens=5` and `token_count=5` stay.
+/// A name that says its value is a credential, in any spelling (`password`, `MCP_API_TOKEN`,
+/// `client-secret`, `secretKey`). By how it ends, so `tokens=5` and `token_count=5` stay.
 fn names_a_secret(name: &str) -> bool {
     const ENDS: &[&str] = &[
         "password",
         "passwd",
         "passphrase",
         "pwd",
-        "_pass",
-        "-pass",
         "secret",
-        "secret_key",
-        "secret-key",
-        "access_key",
-        "access-key",
+        "secretkey",
+        "accesskey",
         "token",
         "apikey",
-        "api_key",
-        "api-key",
         "credential",
         "credentials",
-        "private_key",
-        "private-key",
+        "privatekey",
     ];
-    name == "pass" || ENDS.iter().any(|n| name.ends_with(n))
+    // `pass` alone only as its own word: `bypass` and `compass` are not secrets.
+    let pass = name.eq_ignore_ascii_case("pass")
+        || ["_pass", "-pass", "_PASS", "-PASS", "Pass"].iter().any(|e| name.ends_with(e));
+    let flat: String = name.chars().filter(|c| !matches!(c, '_' | '-')).collect::<String>().to_ascii_lowercase();
+    pass || ENDS.iter().any(|e| flat.ends_with(e))
 }
 
 /// A name whose whole value, to the end of the string or the line, is a credential.
 fn names_a_header(name: &str) -> bool {
-    matches!(name, "authorization" | "proxy-authorization" | "cookie" | "set-cookie")
+    matches!(name.to_ascii_lowercase().as_str(), "authorization" | "proxy-authorization" | "cookie" | "set-cookie")
 }
 
 /// How long the credential at the start of `rest` is, when one is.
@@ -155,15 +152,49 @@ fn token_at(rest: &str, before: Option<char>) -> Option<usize> {
     })
 }
 
-/// A line of a key's body, cut from its block: long, nothing but base64, of all three kinds of
-/// character (so a commit id or a digest, all hex in one case, stays).
-fn is_key_line(text: &str) -> bool {
-    let line = text.trim();
-    line.len() >= 40
-        && line.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '='))
-        && line.contains(|c: char| c.is_ascii_uppercase())
-        && line.contains(|c: char| c.is_ascii_lowercase())
-        && line.contains(|c: char| c.is_ascii_digit())
+fn is_base64_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=')
+}
+
+/// How long the run of base64 at the start of `rest` is, when it reads like a key's body or a
+/// random secret: long, of all three kinds of character (so a commit id or a digest, all hex in
+/// one case, stays), and not the first part of a path or a name (`src/SomeLongName2.ts`).
+fn key_run_at(rest: &str) -> Option<usize> {
+    let len = rest.find(|c| !is_base64_char(c)).unwrap_or(rest.len());
+    let run = &rest[..len];
+    let goes_on = rest[len..].starts_with(['.', '-', '_']);
+    (len >= 40
+        && !goes_on
+        && !run.starts_with('/')
+        && run.contains(|c: char| c.is_ascii_uppercase())
+        && run.contains(|c: char| c.is_ascii_lowercase())
+        && run.contains(|c: char| c.is_ascii_digit()))
+    .then_some(len)
+}
+
+fn is_key_marker(line: &str) -> bool {
+    line.contains("PRIVATE KEY") && line.contains("-----")
+}
+
+/// For each line of a log read line by line, whether it sits in a private key's block: from its
+/// BEGIN line to its END line, or to the end of the log. A key's last lines can be short enough
+/// to look like nothing.
+pub fn in_key_block<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<bool> {
+    let mut inside = false;
+    lines
+        .map(|line| {
+            let marker = is_key_marker(line);
+            if marker && line.contains("BEGIN") {
+                inside = !line.contains("END");
+                return true;
+            }
+            if marker && line.contains("END") {
+                inside = false;
+                return true;
+            }
+            inside
+        })
+        .collect()
 }
 
 /// Where the quoted text starting at `body` ends: at the first `quote` no backslash escapes.
@@ -186,7 +217,7 @@ fn closing_quote(body: &str, quote: char) -> usize {
 fn name_before(before: &str) -> String {
     let before = before.trim_end_matches([' ', '"', '\'', '\\']);
     let rest = before.trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-    before[rest.len()..].to_ascii_lowercase()
+    before[rest.len()..].to_string()
 }
 
 /// `text` with anything that looks like a credential replaced, wherever it sits (`token=ya29.…`,
@@ -195,8 +226,7 @@ fn name_before(before: &str) -> String {
 /// format, so reports and agents get log lines without what is plainly a secret; it is not a
 /// guarantee that none is left.
 pub fn redact_tokens(text: &str) -> String {
-    let key_block = text.contains("PRIVATE KEY") && (text.contains("-----BEGIN") || text.contains("-----END"));
-    if key_block || is_key_line(text) {
+    if is_key_marker(text) {
         return REDACTED.to_string();
     }
     let mut out = String::with_capacity(text.len());
@@ -205,6 +235,13 @@ pub fn redact_tokens(text: &str) -> String {
         let rest = &text[i..];
         let before = text[..i].chars().next_back();
         if let Some(len) = token_at(rest, before) {
+            out.push_str(REDACTED);
+            i += len;
+            continue;
+        }
+        if !before.is_some_and(is_base64_char)
+            && let Some(len) = key_run_at(rest)
+        {
             out.push_str(REDACTED);
             i += len;
             continue;
@@ -223,16 +260,17 @@ pub fn redact_tokens(text: &str) -> String {
                 continue;
             }
         }
-        // The user and password of a URL. Past the first `/` too when it reads `user:pass@`:
-        // a password can hold one.
-        if let Some(rest_of_url) = rest.strip_prefix("://") {
+        // The user and password of a URL: up to the last `@` when what comes before it reads
+        // `user:pass` (a password can hold a `/` or an `@`), or else an `@` in the host part. A
+        // quote ends the URL only when the URL itself began inside one.
+        if let Some(url) = rest.strip_prefix("://") {
+            let scheme =
+                text[..i].trim_end_matches(|c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+            let quoted = scheme.ends_with(['"', '\'']);
             let word =
-                rest_of_url.find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'')).unwrap_or(rest_of_url.len());
-            let host = rest_of_url[..word].find(['/', '?', '#']).unwrap_or(word);
-            let at = rest_of_url[..host].rfind('@').or_else(|| {
-                let at = rest_of_url[..word].rfind('@')?;
-                rest_of_url[..at].contains(':').then_some(at)
-            });
+                url.find(|c: char| c.is_whitespace() || (quoted && matches!(c, '"' | '\''))).unwrap_or(url.len());
+            let host = url[..word].find(['/', '?', '#']).unwrap_or(word);
+            let at = url[..word].rfind('@').filter(|&at| url[..at].contains(':')).or_else(|| url[..host].rfind('@'));
             if let Some(at) = at {
                 out.push_str("://");
                 out.push_str(REDACTED);
@@ -258,7 +296,8 @@ pub fn redact_tokens(text: &str) -> String {
                     None => body.find(char::is_whitespace).unwrap_or(body.len()),
                 };
                 // After a colon, a short bare word next to "token" is prose (`token: expired`).
-                let prose = c == ':' && opening.is_none() && !header && name.ends_with("token") && len < 8;
+                let prose =
+                    c == ':' && opening.is_none() && !header && name.to_ascii_lowercase().ends_with("token") && len < 8;
                 if len >= 1 && !prose {
                     let head = 1 + spaces + opening.map_or(0, str::len);
                     out.push_str(&rest[..head]);
@@ -320,6 +359,13 @@ mod tests {
             ("secret_key=x", "secret_key=[redacted]"),
             ("passphrase=x", "passphrase=[redacted]"),
             ("db_pass=x", "db_pass=[redacted]"),
+            ("dbPass=x", "dbPass=[redacted]"),
+            ("secretKey=x", "secretKey=[redacted]"),
+            (r#"{"accessKey":"x","privateKey":"y"}"#, r#"{"accessKey":"[redacted]","privateKey":"[redacted]"}"#),
+            ("postgres://u:pa@ss/word@10.0.0.1/db", "postgres://[redacted]@10.0.0.1/db"),
+            (r#"postgres://u:pa"ss@10.0.0.1/db"#, "postgres://[redacted]@10.0.0.1/db"),
+            (r#"{"url":"postgres://h/db","n":"a:b@c"}"#, r#"{"url":"postgres://h/db","n":"a:b@c"}"#),
+            ("Step 2: MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj", "Step 2: [redacted]"),
             ("postgres://u:p/ss@10.0.0.1/db", "postgres://[redacted]@10.0.0.1/db"),
             ("-----END PRIVATE KEY-----", "[redacted]"),
             ("MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj", "[redacted]"),
@@ -341,6 +387,8 @@ mod tests {
             "ñandú: ok = sí",
             "ssh git@example.com",
             "bypass=1",
+            "src/components/SomeVeryLongComponentNameWithNumber2AndMore.tsx",
+            "/workspace/packages/MyComponent/SomeOtherFolder2/AndAnotherOneHere",
             "https://example.com/react@18.3.1/index.js",
             "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
             "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b",
